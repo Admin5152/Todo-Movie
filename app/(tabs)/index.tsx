@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, Dimensions, Image, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { getCategory } from '../../lib/tmdb';
 
@@ -116,11 +116,12 @@ export default function HomeTab() {
       try {
         console.log('Starting to load movie data...');
         
+        const minDelay = new Promise((resolve) => setTimeout(resolve, 800));
         const [t, p, u] = await Promise.all([
           getCategory('trending'),
           getCategory('popular'),
           getCategory('upcoming')
-        ]);
+        , minDelay]);
         
         if (!mounted) return;
         

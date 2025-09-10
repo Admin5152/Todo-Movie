@@ -3,9 +3,9 @@ import Constants from 'expo-constants';
 
 const extra: any = (Constants.expoConfig?.extra as any) || (Constants.manifest as any)?.extra || {};
 
-// Fallback to hardcoded values if not in config (for development)
-const apiKey = extra.tmdbApiKey || '9f4cf057ee3b499f94be2fff0161181f';
-const accessToken = extra.tmdbAccessToken || 'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI5ZjRjZjA1N2VlM2I0OTlmOTRiZTJmZmYwMTYxMTgxZiIsIm5iZiI6MTc1NzMzNTU5OS4yOTQwMDAxLCJzdWIiOiI2OGJlZDAyZjQ0Y2RlMGU1ODQxZjU1NzkiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0.yPUpYhlqBflJXk-CORYGtKLhFEC12O8v1V_XOSMucdk';
+// Read credentials from config only; do not hardcode real secrets
+const apiKey: string | undefined = extra.tmdbApiKey;
+const accessToken: string | undefined = extra.tmdbAccessToken;
 
 const client = axios.create({ 
   baseURL: 'https://api.themoviedb.org/3',
@@ -18,11 +18,17 @@ const client = axios.create({
 
 async function safeGet<T>(url: string, params?: any): Promise<T | null> {
   try {
+    const authHeaders = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+    const authParams = !accessToken && apiKey ? { api_key: apiKey } : {};
     const res = await client.get(url, { 
       params: { 
         language: 'en-US',
+        ...authParams,
         ...params 
-      } 
+      },
+      headers: {
+        ...authHeaders,
+      }
     });
     
     return res.data as T;

@@ -1,8 +1,9 @@
 import { useMyList } from '@/lib/useMyList';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import TodoImage from '../../assets/images/Todo.png';
 import { getMovieDetails } from '../../lib/tmdb';
 
 export default function MovieDetails() {
@@ -11,9 +12,14 @@ export default function MovieDetails() {
   const [loading, setLoading] = useState(true);
   const { add, has } = useMyList();
 
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
   const loadMovieDetails = useCallback(async () => {
     try {
-      const data = await getMovieDetails(Number(id));
+      const [data] = await Promise.all([
+        getMovieDetails(Number(id)),
+        wait(700), // keep loader visible briefly for smoother UX
+      ]);
       setMovie(data);
     } catch (error) {
       console.error('Failed to load movie details:', error);
@@ -27,7 +33,9 @@ export default function MovieDetails() {
   }, [loadMovieDetails]);
 
   const handlePlayPress = useCallback(() => {
-    router.push(`/watch/${movie?.id}`);
+    if (movie?.id) {
+      router.push(`/watch/${movie.id}`);
+    }
   }, [movie?.id]);
 
   const handleAddToList = useCallback(() => {
@@ -36,7 +44,7 @@ export default function MovieDetails() {
     }
   }, [movie, add]);
 
-  if (loading) return <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}><ActivityIndicator color="#FFD700" /></View>;
+  if (loading) return <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}><ActivityIndicator size="large" color="#FFD700" /><Text style={{ color: '#9aa0a6', marginTop: 12 }}>Loading details...</Text></View>;
   if (!movie) return <View style={styles.container}><Text style={{ color: '#fff' }}>Not found</Text></View>;
 
   const title = movie.title || movie.name;
@@ -53,10 +61,10 @@ export default function MovieDetails() {
       
       <ScrollView style={styles.scrollView}>
         <Image 
-          source={movie.poster_path ? { uri: `https://image.tmdb.org/t/p/w780${movie.poster_path}` } : require('../../assets/images/Todo.png')} 
+          source={movie.poster_path ? { uri: `https://image.tmdb.org/t/p/w780${movie.poster_path}` } : (TodoImage as any)} 
           style={styles.poster}
           resizeMode="cover"
-          loadingIndicatorSource={require('../../assets/images/Todo.png')}
+          loadingIndicatorSource={TodoImage as any}
           fadeDuration={200}
         />
         <View style={styles.content}>

@@ -1,8 +1,9 @@
 import { useMyList } from '@/lib/useMyList';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import React, { useCallback, useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { Alert, Image, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import TodoImage from '../../assets/images/Todo.png';
 
 export default function MyListScreen() {
   const { list, remove } = useMyList();
@@ -66,7 +67,7 @@ export default function MyListScreen() {
       <View style={styles.emptyActions}>
         <TouchableOpacity 
           style={[styles.browseButton, { height: getRemoveButtonHeight() + 8 }]}
-          onPress={() => router.push('/search')}
+          onPress={() => router.push('/(tabs)/search')}
           activeOpacity={0.8}
         >
           <Ionicons name="search" size={20} color="#000" />
@@ -175,7 +176,7 @@ export default function MyListScreen() {
                       <Image 
                         source={movie.poster_path 
                           ? { uri: `https://image.tmdb.org/t/p/w500${movie.poster_path}` } 
-                          : require('../../assets/images/Todo.png')
+                          : (TodoImage as any)
                         } 
                         style={styles.poster} 
                         resizeMode="cover"

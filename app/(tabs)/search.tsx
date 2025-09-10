@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
-import React, { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Image, StyleSheet, Text, TextInput, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import TodoImage from '../../assets/images/Todo.png';
 import { searchMovies } from '../../lib/tmdb';
 
 export default function SearchScreen() {
@@ -17,12 +18,17 @@ export default function SearchScreen() {
     return { columns, cardWidth, gutter };
   }, [width]);
 
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
   const onSearch = useCallback(async () => {
     if (!query.trim()) return;
     
     setLoading(true);
     try {
-      const data = await searchMovies(query);
+      const [data] = await Promise.all([
+        searchMovies(query),
+        wait(600), // ensure loader is visible for smoother UX
+      ]);
       setResults(data);
     } catch (error) {
       console.error('Search failed:', error);
@@ -43,10 +49,10 @@ export default function SearchScreen() {
       activeOpacity={0.8}
     >
       <Image 
-        source={item.poster_path ? { uri: `https://image.tmdb.org/t/p/w500${item.poster_path}` } : require('../../assets/images/Todo.png')} 
+        source={item.poster_path ? { uri: `https://image.tmdb.org/t/p/w500${item.poster_path}` } : (TodoImage as any)} 
         style={{ width: '100%', aspectRatio: 2/3, borderRadius: 12, backgroundColor: '#14141c', borderWidth: 1, borderColor: '#232335' }} 
         resizeMode="cover"
-        loadingIndicatorSource={require('../../assets/images/Todo.png')}
+        loadingIndicatorSource={TodoImage as any}
         fadeDuration={200}
       />
       <Text numberOfLines={1} style={{ color: '#dfe3e6', marginTop: 6 }}>{item.title || item.name}</Text>
@@ -119,11 +125,15 @@ export default function SearchScreen() {
             numColumns={layout.columns}
             showsVerticalScrollIndicator={false}
             renderItem={renderMovieItem}
-            getItemLayout={(data, index) => ({
-              length: layout.cardWidth + layout.gutter,
-              offset: (layout.cardWidth + layout.gutter) * Math.floor(index / layout.columns),
-              index,
-            })}
+            getItemLayout={(data, index) => {
+              const rowHeight = Math.round(layout.cardWidth * 1.5) + layout.gutter;
+              const rowIndex = Math.floor(index / layout.columns);
+              return {
+                length: rowHeight,
+                offset: rowHeight * rowIndex,
+                index,
+              };
+            }}
             removeClippedSubviews={true}
             maxToRenderPerBatch={10}
             windowSize={10}
