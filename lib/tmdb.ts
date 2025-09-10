@@ -9,30 +9,105 @@ const accessToken = extra.tmdbAccessToken || 'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI5Z
 
 const client = axios.create({ 
   baseURL: 'https://api.themoviedb.org/3',
-  timeout: 30000, // Increased timeout for better reliability
+  timeout: 20000, // Allow slower networks before timing out
   headers: {
     'Accept': 'application/json',
     'Content-Type': 'application/json',
+    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
   }
 });
 
+// Note: We will explicitly add api_key per call in safeGet
+
+function buildUrl(path: string, params?: Record<string, any>) {
+  const searchParams = new URLSearchParams({
+    api_key: apiKey,
+    language: 'en-US',
+    ...(Object.fromEntries(Object.entries(params || {}).map(([k, v]) => [k, String(v)])))
+  });
+  return `https://api.themoviedb.org/3/${path}?${searchParams.toString()}`;
+}
+
+async function fetchWithTimeout(input: string, init: RequestInit & { timeoutMs?: number } = {}) {
+  const { timeoutMs = 20000, ...rest } = init;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(input, { ...rest, signal: controller.signal });
+    return resp;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function safeGet<T>(url: string, params?: any): Promise<T | null> {
   try {
-    const res = await client.get(url, { 
-      params: { 
-        language: 'en-US',
-        ...params 
-      } 
-    });
-    
-    return res.data as T;
+    const mergedParams = { api_key: apiKey, language: 'en-US', ...(params || {}) };
+    const fullUrl = buildUrl(url, mergedParams);
+
+    // Run axios and fetch in parallel, take first success
+    const axiosPromise = client.get(url, { params: mergedParams, withCredentials: false })
+      .then(r => ({ source: 'axios' as const, ok: true as const, data: r.data }))
+      .catch(e => ({ source: 'axios' as const, ok: false as const, error: e }));
+
+    const fetchPromise = fetchWithTimeout(fullUrl, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
+      timeoutMs: 20000,
+    })
+      .then(async r => r.ok 
+        ? ({ source: 'fetch' as const, ok: true as const, data: await r.json() }) 
+        : ({ source: 'fetch' as const, ok: false as const, error: new Error(`HTTP ${r.status}`) }))
+      .catch(e => ({ source: 'fetch' as const, ok: false as const, error: e }));
+
+    const first = await Promise.race([axiosPromise, fetchPromise]);
+    if (first.ok) return first.data as T;
+
+    // If the first failed, await the other
+    const second = await (first.source === 'axios' ? fetchPromise : axiosPromise);
+    if (second.ok) return second.data as T;
+
+    // Final retry: fetch without Authorization header
+    try {
+      const r = await fetchWithTimeout(fullUrl, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' },
+        timeoutMs: 20000,
+      });
+      if (r.ok) return (await r.json()) as T;
+      console.warn(`TMDB retry response not OK for ${url}:`, { status: r.status, statusText: r.statusText });
+    } catch (retryErr) {
+      console.warn(`TMDB retry without auth failed for ${url}:`, retryErr);
+    }
+
+    // One more delayed retry without auth in case of transient network hiccup
+    try {
+      await new Promise(res => setTimeout(res, 1500));
+      const r2 = await fetchWithTimeout(fullUrl, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' },
+        timeoutMs: 20000,
+      });
+      if (r2.ok) return (await r2.json()) as T;
+      console.warn(`TMDB delayed retry not OK for ${url}:`, { status: r2.status, statusText: r2.statusText });
+    } catch (retryErr2) {
+      console.warn(`TMDB delayed retry error for ${url}:`, retryErr2);
+    }
+
+    throw (first as any).error || (second as any).error || new Error('Unknown TMDB error');
   } catch (error) {
     if (axios.isAxiosError(error)) {
       console.warn(`TMDB API call failed for ${url}:`, {
         status: error.response?.status,
+        data: error.response?.data,
         message: error.message,
-        code: error.code
+        code: error.code,
       });
+    } else {
+      console.warn(`TMDB API call error (non-Axios) for ${url}:`, error);
     }
     return null as any;
   }

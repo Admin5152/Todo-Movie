@@ -21,6 +21,7 @@ export default function SearchScreen() {
     if (!query.trim()) return;
     
     setLoading(true);
+    const start = Date.now();
     try {
       const data = await searchMovies(query);
       setResults(data);
@@ -28,7 +29,13 @@ export default function SearchScreen() {
       console.error('Search failed:', error);
       setResults([]);
     } finally {
-      setLoading(false);
+      const elapsed = Date.now() - start;
+      const minDuration = 700; // hold spinner a bit for UX
+      if (elapsed < minDuration) {
+        setTimeout(() => setLoading(false), minDuration - elapsed);
+      } else {
+        setLoading(false);
+      }
     }
   }, [query]);
 

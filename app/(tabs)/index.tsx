@@ -113,9 +113,10 @@ export default function HomeTab() {
     let mounted = true;
     
     const loadData = async () => {
+      const start = Date.now();
       try {
         console.log('Starting to load movie data...');
-        
+
         const [t, p, u] = await Promise.all([
           getCategory('trending'),
           getCategory('popular'),
@@ -144,7 +145,13 @@ export default function HomeTab() {
         }
       } finally {
         if (mounted) {
-          setLoading(false);
+          const elapsed = Date.now() - start;
+          const minDuration = 900; // ensure spinner shows ~0.9s
+          if (elapsed < minDuration) {
+            setTimeout(() => mounted && setLoading(false), minDuration - elapsed);
+          } else {
+            setLoading(false);
+          }
         }
       }
     };

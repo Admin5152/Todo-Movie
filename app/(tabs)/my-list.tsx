@@ -265,6 +265,7 @@ const styles = StyleSheet.create({
   titleContainer: {
     flexDirection: 'row',
     alignItems: 'center',
+    
   },
   titleIndicator: {
     width: 5,

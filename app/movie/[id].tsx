@@ -12,13 +12,20 @@ export default function MovieDetails() {
   const { add, has } = useMyList();
 
   const loadMovieDetails = useCallback(async () => {
+    const start = Date.now();
     try {
       const data = await getMovieDetails(Number(id));
       setMovie(data);
     } catch (error) {
       console.error('Failed to load movie details:', error);
     } finally {
-      setLoading(false);
+      const elapsed = Date.now() - start;
+      const minDuration = 800; // ensure visible loading
+      if (elapsed < minDuration) {
+        setTimeout(() => setLoading(false), minDuration - elapsed);
+      } else {
+        setLoading(false);
+      }
     }
   }, [id]);
 
