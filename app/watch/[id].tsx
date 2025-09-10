@@ -1,7 +1,7 @@
 import { getMovieVideos } from '@/lib/tmdb';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, SafeAreaView, StatusBar, StyleSheet, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { WebView } from 'react-native-webview';
 
@@ -17,9 +17,14 @@ export default function WatchScreen() {
     return { width: maxWidth, height };
   }, [width]);
 
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
   const loadVideos = useCallback(async () => {
     try {
-      const vids = await getMovieVideos(Number(id));
+      const [vids] = await Promise.all([
+        getMovieVideos(Number(id)),
+        wait(600),
+      ]);
       const preferred = vids.find((v) => v.site === 'YouTube' && v.type === 'Trailer') || vids.find((v) => v.site === 'YouTube');
       setVideoKey(preferred?.key ?? null);
     } catch (error) {
