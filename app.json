@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "todo",
-    "slug": "todo",
+    "name": "Todo",
+    "slug": "Todo",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/Todo.png",
     "scheme": "todo",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -13,7 +13,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "foregroundImage": "./assets/images/Todoimage.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true
@@ -21,14 +21,14 @@
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/Todoimage.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/Todoimage.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
@@ -37,6 +37,10 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "tmdbApiKey": "9f4cf057ee3b499f94be2fff0161181f",
+      "tmdbAccessToken": "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI5ZjRjZjA1N2VlM2I0OTlmOTRiZTJmZmYwMTYxMTgxZiIsIm5iZiI6MTc1NzMzNTU5OS4yOTQwMDAxLCJzdWIiOiI2OGJlZDAyZjQ0Y2RlMGU1ODQxZjU1NzkiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0.yPUpYhlqBflJXk-CORYGtKLhFEC12O8v1V_XOSMucdk"
     }
   }
 }
