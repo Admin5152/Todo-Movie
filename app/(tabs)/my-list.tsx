@@ -239,7 +239,7 @@ const styles = StyleSheet.create({
   },
   header: {
     position: 'relative',
-    backgroundColor: '#1a1a1a',
+    backgroundColor: '#0a0a0a' ,
     paddingTop: StatusBar.currentHeight ? StatusBar.currentHeight + 20 : 60,
     paddingBottom: 24,
     borderBottomWidth: 1,

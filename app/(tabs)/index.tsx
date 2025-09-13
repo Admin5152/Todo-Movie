@@ -1,7 +1,9 @@
+import { useAuth } from '@/lib/AuthContext';
+import { getCategory } from '@/lib/tmdb';
+import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Dimensions, Image, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { getCategory } from '../../lib/tmdb';
+import { ActivityIndicator, Alert, Dimensions, Image, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 const screenWidth = Dimensions.get('window').width;
 const screenHeight = Dimensions.get('window').height;
@@ -108,6 +110,7 @@ export default function HomeTab() {
   const [popular, setPopular] = useState<Movie[]>([]);
   const [upcoming, setUpcoming] = useState<Movie[]>([]);
   const [loading, setLoading] = useState(true);
+  const { user, signOut } = useAuth();
 
   useEffect(() => {
     let mounted = true;
@@ -163,6 +166,28 @@ export default function HomeTab() {
     };
   }, []);
 
+  const handleSignOut = async () => {
+    Alert.alert(
+      'Sign Out',
+      'Are you sure you want to sign out?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Sign Out',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await signOut();
+              router.replace('/(auth)');
+            } catch (error) {
+              Alert.alert('Error', 'Failed to sign out');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#0b0b0f" />
@@ -172,6 +197,17 @@ export default function HomeTab() {
         <View style={styles.heroContent}>
           <Text style={styles.logo}>Todo</Text>
           <Text style={styles.subtitle}>Discover amazing movies & shows</Text>
+        </View>
+        
+        {/* User Profile Section */}
+        <View style={styles.profileSection}>
+          <View style={styles.userInfo}>
+            <Text style={styles.welcomeText}>Welcome back,</Text>
+            <Text style={styles.userName}>{user?.name || 'User'}</Text>
+          </View>
+          <TouchableOpacity onPress={handleSignOut} style={styles.signOutButton}>
+            <Ionicons name="log-out-outline" size={20} color="#FFD700" />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -206,6 +242,7 @@ const styles = StyleSheet.create({
   },
   heroContent: {
     alignItems: 'center',
+    marginBottom: 16,
   },
   logo: {
     color: '#FFD700',
@@ -222,6 +259,33 @@ const styles = StyleSheet.create({
     fontSize: getResponsiveFontSize(16),
     fontWeight: '500',
     textAlign: 'center',
+  },
+  profileSection: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#1f1f2a',
+  },
+  userInfo: {
+    flex: 1,
+  },
+  welcomeText: {
+    color: '#94a3b8',
+    fontSize: getResponsiveFontSize(14),
+    fontWeight: '500',
+  },
+  userName: {
+    color: '#f8fafc',
+    fontSize: getResponsiveFontSize(16),
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  signOutButton: {
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 215, 0, 0.1)',
   },
   scrollView: {
     flex: 1,
