@@ -6,7 +6,7 @@ import { Alert, Image, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity
 
 export default function MyListScreen() {
   const { list, remove } = useMyList();
-  const { width, height } = useWindowDimensions();
+  const { width } = useWindowDimensions();
   
   const layout = useMemo(() => {
     const minCard = 140;
@@ -46,10 +46,6 @@ export default function MyListScreen() {
       ]
     );
   }, [remove]);
-
-  const handleMoviePress = useCallback((movieId: number) => {
-    router.push(`/movie/${movieId}`);
-  }, []);
 
   const EmptyState = () => (
     <View style={styles.emptyContainer}>
@@ -155,7 +151,7 @@ export default function MyListScreen() {
             <View style={styles.gridSection}>
               <Text style={styles.sectionTitle}>Your Movies</Text>
               <View style={[styles.grid, { marginHorizontal: -layout.gutter / 2 }]}>
-                {list.map((movie: any, index: number) => (
+                {list.map((movie: any) => (
                   <View 
                     key={movie.id} 
                     style={[

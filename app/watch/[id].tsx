@@ -9,7 +9,8 @@ export default function WatchScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [videoKey, setVideoKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const { width, height } = useWindowDimensions();
+  const [webViewError, setWebViewError] = useState(false);
+  const { width } = useWindowDimensions();
 
   const playerSize = useMemo(() => {
     const maxWidth = Math.min(width - 32, width * 0.95);
@@ -19,8 +20,15 @@ export default function WatchScreen() {
 
   const loadVideos = useCallback(async () => {
     try {
+      setLoading(true);
+      setWebViewError(false);
       const vids = await getMovieVideos(Number(id));
-      const preferred = vids.find((v) => v.site === 'YouTube' && v.type === 'Trailer') || vids.find((v) => v.site === 'YouTube');
+      
+      // Prefer trailers, then any YouTube video
+      const preferred = vids.find((v) => v.site === 'YouTube' && v.type === 'Trailer') || 
+                       vids.find((v) => v.site === 'YouTube');
+      
+      console.log('Found videos:', vids.length, 'Selected:', preferred?.key);
       setVideoKey(preferred?.key ?? null);
     } catch (error) {
       console.error('Failed to load videos:', error);
@@ -31,8 +39,10 @@ export default function WatchScreen() {
   }, [id]);
 
   useEffect(() => {
-    loadVideos();
-  }, [loadVideos]);
+    if (id) {
+      loadVideos();
+    }
+  }, [loadVideos, id]);
 
   const handleBackPress = useCallback(() => {
     router.back();
@@ -40,6 +50,260 @@ export default function WatchScreen() {
 
   const handleSearchPress = useCallback(() => {
     router.push('/(tabs)/search');
+  }, []);
+
+  const handleRetry = useCallback(() => {
+    setWebViewError(false);
+    loadVideos();
+  }, [loadVideos]);
+
+  // Enhanced YouTube embed HTML with better error handling and debugging
+  const generateYouTubeHTML = useCallback((videoKey: string) => {
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        <style>
+          * { 
+            margin: 0; 
+            padding: 0; 
+            box-sizing: border-box; 
+          }
+          html, body { 
+            width: 100%; 
+            height: 100%; 
+            background: #000; 
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          }
+          .video-container { 
+            position: relative; 
+            width: 100%; 
+            height: 100%; 
+            background: #000;
+            border-radius: 16px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          iframe { 
+            width: 100%; 
+            height: 100%; 
+            border: none;
+            background: #000;
+            border-radius: 16px;
+          }
+          .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #000 0%, #1a1a1a 100%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: #FFD700;
+            font-size: 18px;
+            font-weight: 600;
+            z-index: 10;
+            border-radius: 16px;
+            transition: opacity 0.5s ease;
+          }
+          .loading-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+          }
+          .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(255, 215, 0, 0.3);
+            border-top: 3px solid #FFD700;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+          }
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+          .error-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #1a1a1a;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: #ff6b6b;
+            font-size: 16px;
+            font-weight: 600;
+            z-index: 20;
+            border-radius: 16px;
+            text-align: center;
+            padding: 20px;
+          }
+          .error-overlay.visible {
+            display: flex;
+          }
+          .retry-btn {
+            background: #FFD700;
+            color: #000;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-weight: 700;
+            margin-top: 20px;
+            cursor: pointer;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="video-container">
+          <div class="loading-overlay" id="loadingOverlay">
+            <div class="loading-spinner"></div>
+            <div>Loading YouTube Player...</div>
+          </div>
+          
+          <div class="error-overlay" id="errorOverlay">
+            <div>Failed to load video</div>
+            <button class="retry-btn" onclick="retryLoad()">Retry</button>
+          </div>
+          
+          <iframe 
+            id="youtubeFrame"
+            src="https://www.youtube.com/embed/${videoKey}?autoplay=0&mute=0&playsinline=1&modestbranding=1&rel=0&showinfo=0&controls=1&fs=1&enablejsapi=1&iv_load_policy=3&cc_load_policy=0&origin=${Platform.OS === 'android' ? 'https://localhost' : 'https://example.com'}"
+            frameborder="0"
+            allowfullscreen
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            referrerpolicy="strict-origin-when-cross-origin">
+          </iframe>
+        </div>
+        
+        <script>
+          console.log('YouTube player initializing with video key: ${videoKey}');
+          
+          let loadTimeout;
+          let retryCount = 0;
+          const maxRetries = 3;
+          
+          function hideLoading() {
+            const overlay = document.getElementById('loadingOverlay');
+            if (overlay && !overlay.classList.contains('hidden')) {
+              overlay.classList.add('hidden');
+              console.log('Loading overlay hidden');
+            }
+          }
+          
+          function showError() {
+            const loadingOverlay = document.getElementById('loadingOverlay');
+            const errorOverlay = document.getElementById('errorOverlay');
+            
+            if (loadingOverlay) loadingOverlay.style.display = 'none';
+            if (errorOverlay) errorOverlay.classList.add('visible');
+            
+            // Send error message to React Native
+            if (window.ReactNativeWebView) {
+              window.ReactNativeWebView.postMessage(JSON.stringify({
+                type: 'error',
+                message: 'Failed to load YouTube video'
+              }));
+            }
+          }
+          
+          function retryLoad() {
+            if (retryCount < maxRetries) {
+              retryCount++;
+              console.log('Retrying load, attempt:', retryCount);
+              
+              const errorOverlay = document.getElementById('errorOverlay');
+              const loadingOverlay = document.getElementById('loadingOverlay');
+              
+              if (errorOverlay) errorOverlay.classList.remove('visible');
+              if (loadingOverlay) {
+                loadingOverlay.style.display = 'flex';
+                loadingOverlay.classList.remove('hidden');
+              }
+              
+              // Reload iframe
+              const iframe = document.getElementById('youtubeFrame');
+              if (iframe) {
+                iframe.src = iframe.src;
+              }
+              
+              setupLoadHandlers();
+            }
+          }
+          
+          function setupLoadHandlers() {
+            const iframe = document.getElementById('youtubeFrame');
+            if (!iframe) return;
+            
+            // Clear any existing timeout
+            if (loadTimeout) clearTimeout(loadTimeout);
+            
+            iframe.onload = function() {
+              console.log('iframe loaded successfully');
+              hideLoading();
+              
+              // Send success message to React Native
+              if (window.ReactNativeWebView) {
+                window.ReactNativeWebView.postMessage(JSON.stringify({
+                  type: 'loaded',
+                  message: 'Video loaded successfully'
+                }));
+              }
+            };
+            
+            iframe.onerror = function(e) {
+              console.log('iframe error:', e);
+              showError();
+            };
+            
+            // Fallback timeout
+            loadTimeout = setTimeout(() => {
+              console.log('Load timeout reached');
+              const overlay = document.getElementById('loadingOverlay');
+              if (overlay && !overlay.classList.contains('hidden')) {
+                showError();
+              }
+            }, 15000); // 15 second timeout
+          }
+          
+          // Initialize
+          setupLoadHandlers();
+          
+          // Additional fallback to hide loading
+          setTimeout(() => {
+            const overlay = document.getElementById('loadingOverlay');
+            if (overlay && !overlay.classList.contains('hidden')) {
+              console.log('Fallback: hiding loading overlay');
+              hideLoading();
+            }
+          }, 8000);
+          
+          // YouTube API ready callback
+          function onYouTubeIframeAPIReady() {
+            console.log('YouTube API ready');
+            hideLoading();
+          }
+          
+          // Listen for messages from parent
+          window.addEventListener('message', function(event) {
+            console.log('Received message:', event.data);
+          });
+          
+          console.log('Script setup complete');
+        </script>
+      </body>
+      </html>
+    `;
   }, []);
 
   if (loading) {
@@ -71,7 +335,6 @@ export default function WatchScreen() {
       {/* Enhanced Header */}
       <View style={styles.header}>
         <View style={styles.headerBackground} />
-        <View style={styles.headerGradient} />
         <TouchableOpacity style={styles.backButton} onPress={handleBackPress}>
           <View style={styles.buttonInner}>
             <Ionicons name="chevron-back" size={24} color="#FFD700" />
@@ -82,158 +345,73 @@ export default function WatchScreen() {
           <Text style={styles.headerSubtitle}>Movie Trailer</Text>
           <View style={styles.headerUnderline} />
         </View>
-        <TouchableOpacity style={styles.fullscreenButton}>
+        <TouchableOpacity style={styles.fullscreenButton} onPress={handleRetry}>
           <View style={styles.buttonInner}>
-            <Ionicons name="expand-outline" size={20} color="#FFD700" />
+            <Ionicons name="refresh-outline" size={20} color="#FFD700" />
           </View>
         </TouchableOpacity>
       </View>
       
-      {videoKey ? (
+      {videoKey && !webViewError ? (
         <View style={styles.playerContainer}>
           {/* Player Wrapper with Enhanced Styling */}
           <View style={styles.playerFrame}>
             <View style={styles.playerShadow} />
             <View style={styles.playerGlow} />
-             <WebView
-               style={[styles.webView, { width: playerSize.width, height: playerSize.height }]}
-               source={{ 
-                 html: `
-                   <!DOCTYPE html>
-                   <html>
-                   <head>
-                     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-                     <style>
-                       * { 
-                         margin: 0; 
-                         padding: 0; 
-                         box-sizing: border-box; 
-                       }
-                       html, body { 
-                         width: 100%; 
-                         height: 100%; 
-                         background: #000; 
-                         overflow: hidden;
-                         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                       }
-                       .video-container { 
-                         position: relative; 
-                         width: 100%; 
-                         height: 100%; 
-                         background: #000;
-                         border-radius: 16px;
-                         overflow: hidden;
-                         display: flex;
-                         align-items: center;
-                         justify-content: center;
-                       }
-                       iframe { 
-                         width: 100%; 
-                         height: 100%; 
-                         border: none;
-                         background: #000;
-                         border-radius: 16px;
-                       }
-                       .loading-overlay {
-                         position: absolute;
-                         top: 0;
-                         left: 0;
-                         width: 100%;
-                         height: 100%;
-                         background: #000;
-                         display: flex;
-                         align-items: center;
-                         justify-content: center;
-                         color: #FFD700;
-                         font-size: 18px;
-                         font-weight: 600;
-                         z-index: 10;
-                         border-radius: 16px;
-                       }
-                       .loading-overlay.hidden {
-                         display: none;
-                       }
-                     </style>
-                   </head>
-                   <body>
-                     <div class="video-container">
-                       <div class="loading-overlay" id="loadingOverlay">
-                         <div>Loading video...</div>
-                       </div>
-                       <iframe 
-                         id="youtubeFrame"
-                         src="https://www.youtube.com/embed/${videoKey}?autoplay=1&mute=1&playsinline=1&modestbranding=1&rel=0&showinfo=0&controls=1&fs=1&enablejsapi=1&iv_load_policy=3&cc_load_policy=0"
-                         frameborder="0"
-                         allowfullscreen
-                         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share">
-                       </iframe>
-                     </div>
-                     <script>
-                       console.log('Script loaded, video key: ${videoKey}');
-                       
-                       function hideLoading() {
-                         const overlay = document.getElementById('loadingOverlay');
-                         if (overlay) {
-                           overlay.classList.add('hidden');
-                           console.log('Loading overlay hidden');
-                         }
-                       }
-                       
-                       // Hide loading after iframe loads
-                       const iframe = document.getElementById('youtubeFrame');
-                       if (iframe) {
-                         iframe.onload = function() {
-                           console.log('Iframe loaded successfully');
-                           setTimeout(hideLoading, 1500);
-                         };
-                         
-                         iframe.onerror = function() {
-                           console.log('Iframe load error');
-                           setTimeout(hideLoading, 2000);
-                         };
-                       }
-                       
-                       // Fallback to hide loading
-                       setTimeout(hideLoading, 3000);
-                       
-                       // Additional check for iframe content
-                       setTimeout(function() {
-                         const iframe = document.getElementById('youtubeFrame');
-                         if (iframe && iframe.contentDocument) {
-                           console.log('Iframe content accessible');
-                         } else {
-                           console.log('Iframe content not accessible, but that\'s normal for cross-origin');
-                         }
-                         hideLoading();
-                       }, 2000);
-                     </script>
-                   </body>
-                   </html>
-                 `
-               }}
-               allowsFullscreenVideo={true}
-               mediaPlaybackRequiresUserAction={false}
-               javaScriptEnabled={true}
-               domStorageEnabled={true}
-               startInLoadingState={false}
-               scalesPageToFit={false}
-               mixedContentMode="compatibility"
-               originWhitelist={['*']}
-               allowsInlineMediaPlayback={true}
-               bounces={false}
-               scrollEnabled={false}
-               onLoad={() => console.log('WebView loaded successfully')}
-               onError={(syntheticEvent) => {
-                 const { nativeEvent } = syntheticEvent;
-                 console.warn('WebView error: ', nativeEvent);
-               }}
-               onHttpError={(syntheticEvent) => {
-                 const { nativeEvent } = syntheticEvent;
-                 console.warn('WebView HTTP error: ', nativeEvent);
-               }}
-               onLoadStart={() => console.log('WebView started loading')}
-               onLoadEnd={() => console.log('WebView finished loading')}
-             />
+            <WebView
+              key={`webview-${videoKey}-${Date.now()}`} // Force re-render on retry
+              style={[styles.webView, { width: playerSize.width, height: playerSize.height }]}
+              source={{ html: generateYouTubeHTML(videoKey) }}
+              allowsFullscreenVideo={true}
+              mediaPlaybackRequiresUserAction={Platform.OS === 'ios'}
+              javaScriptEnabled={true}
+              domStorageEnabled={true}
+              startInLoadingState={false}
+              scalesPageToFit={Platform.OS === 'android'}
+              mixedContentMode="compatibility"
+              originWhitelist={['*']}
+              allowsInlineMediaPlayback={true}
+              bounces={false}
+              scrollEnabled={false}
+              onMessage={(event) => {
+                try {
+                  const data = JSON.parse(event.nativeEvent.data);
+                  console.log('WebView message:', data);
+                  
+                  if (data.type === 'error') {
+                    setWebViewError(true);
+                  }
+                } catch (e) {
+                  console.log('Failed to parse WebView message:', e);
+                }
+              }}
+              onLoad={() => {
+                console.log('WebView loaded successfully');
+              }}
+              onError={(syntheticEvent) => {
+                const { nativeEvent } = syntheticEvent;
+                console.warn('WebView error: ', nativeEvent);
+                setWebViewError(true);
+              }}
+              onHttpError={(syntheticEvent) => {
+                const { nativeEvent } = syntheticEvent;
+                console.warn('WebView HTTP error: ', nativeEvent);
+                if (nativeEvent.statusCode >= 400) {
+                  setWebViewError(true);
+                }
+              }}
+              onLoadStart={() => console.log('WebView started loading')}
+              onLoadEnd={() => console.log('WebView finished loading')}
+              renderError={() => (
+                <View style={styles.webViewError}>
+                  <Ionicons name="warning-outline" size={48} color="#ff6b6b" />
+                  <Text style={styles.webViewErrorText}>Failed to load video player</Text>
+                  <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
+                    <Text style={styles.retryButtonText}>Retry</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            />
             <View style={styles.playerBorder} />
             <View style={styles.playerCornerAccents}>
               <View style={[styles.cornerAccent, styles.topLeft]} />
@@ -257,16 +435,16 @@ export default function WatchScreen() {
               </View>
             </View>
             <Text style={styles.videoDescription}>
-              Enjoy the trailer in high quality. Tap the fullscreen button for the best viewing experience.
+              Enjoy the trailer in high quality. Tap the refresh button above to reload if needed.
             </Text>
             <View style={styles.videoTips}>
               <View style={styles.tipItem}>
                 <Ionicons name="volume-high" size={16} color="#FFD700" />
-                <Text style={styles.tipText}>Unmute for audio</Text>
+                <Text style={styles.tipText}>Tap to unmute</Text>
               </View>
               <View style={styles.tipItem}>
                 <Ionicons name="expand" size={16} color="#FFD700" />
-                <Text style={styles.tipText}>Pinch to zoom</Text>
+                <Text style={styles.tipText}>Fullscreen available</Text>
               </View>
             </View>
           </View>
@@ -274,31 +452,52 @@ export default function WatchScreen() {
       ) : (
         <View style={styles.noVideoContainer}>
           <View style={styles.noVideoIconContainer}>
-            <Ionicons name="film-outline" size={80} color="#FFD700" />
+            <Ionicons 
+              name={webViewError ? "warning-outline" : "film-outline"} 
+              size={80} 
+              color={webViewError ? "#ff6b6b" : "#FFD700"} 
+            />
             <View style={styles.noVideoIconGlow} />
             <View style={styles.noVideoIconPulse} />
           </View>
-          <Text style={styles.noVideoTitle}>No Trailer Available</Text>
+          <Text style={styles.noVideoTitle}>
+            {webViewError ? "Video Player Error" : "No Trailer Available"}
+          </Text>
           <Text style={styles.noVideoText}>
-            We couldn't find a trailer for this title. Check back later or explore other movies.
+            {webViewError 
+              ? "There was a problem loading the video player. Please try again or check your connection."
+              : "We couldn't find a trailer for this title. Check back later or explore other movies."
+            }
           </Text>
           
           <View style={styles.noVideoActions}>
-             <TouchableOpacity 
-               style={styles.backToDetailsBtn} 
-               onPress={handleBackPress}
-               activeOpacity={0.8}
-             >
-               <View style={styles.buttonGradient} />
-               <Ionicons name="arrow-back" size={18} color="#000" />
-               <Text style={styles.backToDetailsText}>Back to Details</Text>
-             </TouchableOpacity>
+            {webViewError && (
+              <TouchableOpacity 
+                style={styles.retryBtn} 
+                onPress={handleRetry}
+                activeOpacity={0.8}
+              >
+                <View style={styles.buttonGradient} />
+                <Ionicons name="refresh" size={18} color="#000" />
+                <Text style={styles.backToDetailsText}>Retry</Text>
+              </TouchableOpacity>
+            )}
+            
+            <TouchableOpacity 
+              style={styles.backToDetailsBtn} 
+              onPress={handleBackPress}
+              activeOpacity={0.8}
+            >
+              <View style={styles.buttonGradient} />
+              <Ionicons name="arrow-back" size={18} color="#000" />
+              <Text style={styles.backToDetailsText}>Back to Details</Text>
+            </TouchableOpacity>
              
-             <TouchableOpacity 
-               style={styles.searchMoreBtn}
-               onPress={handleSearchPress}
-               activeOpacity={0.8}
-             >
+            <TouchableOpacity 
+              style={styles.searchMoreBtn}
+              onPress={handleSearchPress}
+              activeOpacity={0.8}
+            >
               <View style={styles.searchBtnBorder} />
               <Ionicons name="search" size={18} color="#FFD700" />
               <Text style={styles.searchMoreText}>Search More</Text>
@@ -422,14 +621,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     backgroundColor: 'rgba(255, 215, 0, 0.03)',
   },
-  headerGradient: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'linear-gradient(90deg, rgba(255, 215, 0, 0.05) 0%, transparent 50%, rgba(255, 215, 0, 0.05) 100%)',
-  },
   backButton: {
     borderRadius: 18,
     backgroundColor: 'rgba(255, 215, 0, 0.12)',
@@ -524,6 +715,33 @@ const styles = StyleSheet.create({
         elevation: 8,
       },
     }),
+  },
+  webViewError: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#1a1a1a',
+    borderRadius: 16,
+    padding: 20,
+  },
+  webViewErrorText: {
+    color: '#ff6b6b',
+    fontSize: 16,
+    fontWeight: '600',
+    marginTop: 16,
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  retryButton: {
+    backgroundColor: '#FFD700',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  retryButtonText: {
+    color: '#000',
+    fontWeight: '700',
+    fontSize: 16,
   },
   playerBorder: {
     position: 'absolute',
@@ -751,6 +969,30 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 20,
     marginBottom: 32,
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+  },
+  retryBtn: {
+    position: 'relative',
+    backgroundColor: '#ff6b6b',
+    paddingHorizontal: 28,
+    paddingVertical: 18,
+    borderRadius: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    overflow: 'hidden',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#ff6b6b',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.5,
+        shadowRadius: 12,
+      },
+      android: {
+        elevation: 10,
+      },
+    }),
   },
   backToDetailsBtn: {
     position: 'relative',
@@ -780,7 +1022,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'linear-gradient(135deg, #FFD700 0%, #FFC107 100%)',
+    backgroundColor: 'rgba(255, 215, 0, 0.15)',
   },
   backToDetailsText: {
     color: '#000000',

@@ -18,13 +18,12 @@ import {
 import { getMovieDetails } from '../../lib/tmdb';
 import { useMyList } from '../../lib/useMyList';
 
-const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
+const { height: screenHeight } = Dimensions.get('window');
 
 export default function MovieDetails() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [movie, setMovie] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [imageLoaded, setImageLoaded] = useState(false);
   const { add, has } = useMyList();
 
   const loadMovieDetails = useCallback(async () => {
@@ -93,7 +92,6 @@ export default function MovieDetails() {
             <Image
               source={{ uri: `https://image.tmdb.org/t/p/w1280${movie.backdrop_path}` }}
               style={styles.backdropImage}
-              onLoad={() => setImageLoaded(true)}
             />
             <LinearGradient
               colors={['transparent', 'rgba(11, 11, 15, 0.8)', '#0b0b0f']}
@@ -151,7 +149,7 @@ export default function MovieDetails() {
             {/* Genres */}
             {movie.genres && movie.genres.length > 0 && (
               <View style={styles.genresContainer}>
-                {movie.genres.slice(0, 3).map((genre: any, index: number) => (
+                {movie.genres.slice(0, 3).map((genre: any) => (
                   <View key={genre.id} style={styles.genreTag}>
                     <Text style={styles.genreText}>{genre.name}</Text>
                   </View>

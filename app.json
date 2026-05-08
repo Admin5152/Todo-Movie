@@ -4,24 +4,25 @@
     "slug": "Todo",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/Todo.png",
+    "icon": "./assets/images/icon.png",
     "scheme": "todo",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/Todoimage.png",
+        "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.scam.Todo"
     },
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/Todoimage.png"
+      "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
       "expo-router",
@@ -40,7 +41,11 @@
     },
     "extra": {
       "tmdbApiKey": "9f4cf057ee3b499f94be2fff0161181f",
-      "tmdbAccessToken": "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI5ZjRjZjA1N2VlM2I0OTlmOTRiZTJmZmYwMTYxMTgxZiIsIm5iZiI6MTc1NzMzNTU5OS4yOTQwMDAxLCJzdWIiOiI2OGJlZDAyZjQ0Y2RlMGU1ODQxZjU1NzkiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0.yPUpYhlqBflJXk-CORYGtKLhFEC12O8v1V_XOSMucdk"
+      "tmdbAccessToken": "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI5ZjRjZjA1N2VlM2I0OTlmOTRiZTJmZmYwMTYxMTgxZiIsIm5iZiI6MTc1NzMzNTU5OS4yOTQwMDAxLCJzdWIiOiI2OGJlZDAyZjQ0Y2RlMGU1ODQxZjU1NzkiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0.yPUpYhlqBflJXk-CORYGtKLhFEC12O8v1V_XOSMucdk",
+      "router": {},
+      "eas": {
+        "projectId": "e4764f44-088b-4f1b-9d76-00902f8a0241"
+      }
     }
   }
 }
