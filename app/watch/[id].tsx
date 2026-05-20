@@ -1,1087 +1,965 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Platform, SafeAreaView, StatusBar, StyleSheet, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
+import React, {
+  useCallback, useEffect, useMemo, useRef, useState,
+} from 'react';
+import {
+  ActivityIndicator,
+  AppState,
+  AppStateStatus,
+  GestureResponderEvent,
+  Platform,
+  SafeAreaView,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 import { WebView } from 'react-native-webview';
-import { getMovieVideos } from '../../lib/tmdb';
+import { useIsFocused } from '@react-navigation/native';
+import Video from 'react-native-video';
+import { getMovieVideos, getMovieDetails } from '../../lib/tmdb';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────────────
+const FALLBACK_STREAM_URL =
+  'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
+const VALIDATION_TIMEOUT_MS = 10_000;
+const CONTROLS_HIDE_MS = 4_000;
+const PROGRESS_THROTTLE_MS = 1_000; // Update timer label at most once per second
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stream URL Validation
+// Checks that the URL exists and returns a successful HTTP status before the
+// video player ever mounts. This prevents null-source crashes and black screens.
+// ─────────────────────────────────────────────────────────────────────────────
+type ValidationResult = { valid: true; url: string } | { valid: false; reason: string };
+
+async function validateStreamUrl(url: string): Promise<ValidationResult> {
+  if (!url || typeof url !== 'string' || !url.trim()) {
+    return { valid: false, reason: 'Stream URL is empty or missing' };
+  }
+  try { new URL(url); } catch {
+    return { valid: false, reason: 'Malformed URL — cannot parse' };
+  }
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), VALIDATION_TIMEOUT_MS);
+    const res = await fetch(url, { method: 'HEAD', signal: controller.signal });
+    clearTimeout(timer);
+    if (res.status >= 400) {
+      return { valid: false, reason: `Stream returned HTTP ${res.status}` };
+    }
+    return { valid: true, url };
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      return { valid: false, reason: 'Validation timed out — slow connection?' };
+    }
+    return { valid: false, reason: err?.message ?? 'Network unreachable' };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Utility
+// ─────────────────────────────────────────────────────────────────────────────
+function formatTime(seconds: number): string {
+  if (!isFinite(seconds) || isNaN(seconds) || seconds < 0) return '00:00';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Memoised HUD overlay
+// Keeping controls in a separate memo component means the parent (and the
+// <Video> element) do NOT re-render on every progress tick.
+// ─────────────────────────────────────────────────────────────────────────────
+interface HUDProps {
+  paused: boolean;
+  isMuted: boolean;
+  currentTime: number;
+  duration: number;
+  isBuffering: boolean;
+  onPlay: () => void;
+  onMute: () => void;
+  onSkipBack: () => void;
+  onSkipForward: () => void;
+  onSeek: (e: GestureResponderEvent) => void;
+}
+
+const HUDControls = React.memo(function HUDControls({
+  paused, isMuted, currentTime, duration, isBuffering,
+  onPlay, onMute, onSkipBack, onSkipForward, onSeek,
+}: HUDProps) {
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+  return (
+    <>
+      {/* Buffer spinner — separate from HUD so it shows even without controls */}
+      {isBuffering && (
+        <View style={hudSt.spinnerWrap}>
+          <ActivityIndicator size="large" color="#FFD700" />
+        </View>
+      )}
+
+      {/* Main control overlay */}
+      <View style={hudSt.overlay}>
+        {/* Top: stream badge + quality */}
+        <View style={hudSt.topRow}>
+          <View style={hudSt.liveTag}>
+            <View style={hudSt.liveDot} />
+            <Text style={hudSt.liveText}>STREAMING</Text>
+          </View>
+          <View style={hudSt.qualityTag}>
+            <Text style={hudSt.qualityText}>HD 1080P</Text>
+          </View>
+        </View>
+
+        {/* Centre: skip / play / skip */}
+        <View style={hudSt.centreRow}>
+          <TouchableOpacity style={hudSt.skipBtn} onPress={onSkipBack}>
+            <Ionicons name="play-back" size={28} color="#fff" />
+            <Text style={hudSt.skipLabel}>−10s</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={hudSt.playBtn} onPress={onPlay}>
+            <Ionicons name={paused ? 'play' : 'pause'} size={44} color="#000" />
+          </TouchableOpacity>
+
+          <TouchableOpacity style={hudSt.skipBtn} onPress={onSkipForward}>
+            <Ionicons name="play-forward" size={28} color="#fff" />
+            <Text style={hudSt.skipLabel}>+10s</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Bottom: seek bar + timer + mute */}
+        <View style={hudSt.bottomCol}>
+          <TouchableOpacity
+            style={hudSt.seekbar}
+            activeOpacity={1}
+            onPress={onSeek}
+          >
+            <View style={hudSt.seekTrack}>
+              <View style={[hudSt.seekFill, { width: `${progress}%` as any }]} />
+            </View>
+          </TouchableOpacity>
+
+          <View style={hudSt.timerRow}>
+            <Text style={hudSt.timerText}>
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </Text>
+            <TouchableOpacity style={hudSt.muteBtn} onPress={onMute}>
+              <Ionicons
+                name={isMuted ? 'volume-mute' : 'volume-high'}
+                size={20}
+                color="#FFD700"
+              />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </>
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Screen
+// ─────────────────────────────────────────────────────────────────────────────
 export default function WatchScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [videoKey, setVideoKey] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [webViewError, setWebViewError] = useState(false);
+  const isFocused = useIsFocused();
   const { width } = useWindowDimensions();
 
+  // ── Refs ──────────────────────────────────────────────────────────────────
+  // mountedRef prevents calling setState after the component has unmounted,
+  // which is the most common source of memory leaks in async code.
+  const mountedRef        = useRef(true);
+  const videoRef          = useRef<any>(null);
+  const controlsTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Store currentTime / duration in refs so seek/skip handlers read the latest
+  // values WITHOUT needing them in their dependency arrays (prevents stale closures).
+  const currentTimeRef    = useRef(0);
+  const durationRef       = useRef(0);
+  const lastProgressTime  = useRef(0); // throttle progress state updates
+
+  // ── Core state ────────────────────────────────────────────────────────────
+  const [movie,       setMovie]       = useState<any>(null);
+  const [videoKey,    setVideoKey]    = useState<string | null>(null);
+  const [dataLoading, setDataLoading] = useState(true);
+  const [dataError,   setDataError]   = useState(false);
+  const [playMode,    setPlayMode]    = useState<'movie' | 'trailer'>('movie');
+
+  // ── Stream validation state ───────────────────────────────────────────────
+  const [streamUrl,    setStreamUrl]   = useState<string | null>(null);
+  const [validating,   setValidating]  = useState(false);
+  const [streamError,  setStreamError] = useState<string | null>(null);
+
+  // ── WebView state ─────────────────────────────────────────────────────────
+  const [webViewError, setWebViewError] = useState(false);
+
+  // ── Native video player state ─────────────────────────────────────────────
+  // Start paused=true — only auto-play after stream has been validated.
+  const [paused,        setPaused]        = useState(true);
+  const [currentTime,   setCurrentTime]   = useState(0);
+  const [duration,      setDuration]      = useState(0);
+  const [isBuffering,   setIsBuffering]   = useState(false);
+  const [videoError,    setVideoError]    = useState(false);
+  const [isMuted,       setIsMuted]       = useState(false);
+  const [showControls,  setShowControls]  = useState(true);
+
+  // ── AppState ──────────────────────────────────────────────────────────────
+  const [appActive, setAppActive] = useState(
+    () => AppState.currentState === 'active',
+  );
+
+  // ── Derived: effective paused ─────────────────────────────────────────────
+  // Video MUST be paused when: app is in background, screen is not focused,
+  // user explicitly paused, or there's a playback error.
+  const effectivePaused =
+    paused || !isFocused || !appActive || !!videoError;
+
+  // ── Player dimensions ─────────────────────────────────────────────────────
   const playerSize = useMemo(() => {
-    const maxWidth = Math.min(width - 32, width * 0.95);
-    const playerHeight = Math.round((maxWidth * 9) / 16);
-    return { width: maxWidth, height: playerHeight };
+    const w = Math.min(width - 32, width * 0.95);
+    return { width: w, height: Math.round((w * 9) / 16) };
   }, [width]);
 
-  const loadVideos = useCallback(async () => {
-    try {
-      setLoading(true);
-      setWebViewError(false);
-      const vids = await getMovieVideos(Number(id));
-      
-      // Prefer trailers, then any YouTube video
-      const preferred = vids.find((v) => v.site === 'YouTube' && v.type === 'Trailer') || 
-                       vids.find((v) => v.site === 'YouTube');
-      
-      console.log('Found videos:', vids.length, 'Selected:', preferred?.key);
-      setVideoKey(preferred?.key ?? null);
-    } catch (error) {
-      console.error('Failed to load videos:', error);
-      setVideoKey(null);
-    } finally {
-      setLoading(false);
+  // ─────────────────────────────────────────────────────────────────────────
+  // Lifecycle: cleanup on unmount
+  // Clears ALL timers and marks component as dead so no async setState runs.
+  // ─────────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    };
+  }, []);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Lifecycle: AppState (background / inactive / active)
+  // ─────────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next: AppStateStatus) => {
+      if (!mountedRef.current) return;
+      const isNowActive = next === 'active';
+      setAppActive(isNowActive);
+      // Force-pause when app goes to background or becomes inactive
+      if (!isNowActive) setPaused(true);
+    });
+    return () => sub.remove();
+  }, []);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Lifecycle: Pause when screen loses focus (navigating away)
+  // ─────────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!isFocused) setPaused(true);
+  }, [isFocused]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Stream validation
+  // ─────────────────────────────────────────────────────────────────────────
+  const validateAndSetStream = useCallback(async (url: string, isFallback = false) => {
+    if (!mountedRef.current) return;
+    setValidating(true);
+    setStreamError(null);
+    setStreamUrl(null);
+    setVideoError(false);
+
+    const result = await validateStreamUrl(url);
+
+    if (!mountedRef.current) return;
+    setValidating(false);
+
+    if (result.valid) {
+      setStreamUrl(result.url);
+      setPaused(false); // only allow playback now that the URL is confirmed
+    } else {
+      console.warn('[WatchScreen] Stream validation failed:', result.reason);
+      if (!isFallback) {
+        // Silently try the reliable fallback before surfacing an error
+        await validateAndSetStream(FALLBACK_STREAM_URL, true);
+      } else {
+        // Both the primary and fallback failed — show error to user
+        setStreamError(result.reason);
+      }
     }
-  }, [id]);
+  }, []);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Load movie metadata + kick off stream validation
+  // ─────────────────────────────────────────────────────────────────────────
+  const loadMovieData = useCallback(async () => {
+    if (!id || !mountedRef.current) return;
+    setDataLoading(true);
+    setDataError(false);
+
+    try {
+      const [vids, movieData] = await Promise.all([
+        getMovieVideos(Number(id)),
+        getMovieDetails(Number(id)),
+      ]);
+
+      if (!mountedRef.current) return;
+
+      if (movieData) setMovie(movieData);
+
+      const trailer =
+        vids.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer') ||
+        vids.find((v: any) => v.site === 'YouTube');
+      setVideoKey(trailer?.key ?? null);
+
+      // Validate the stream in parallel — player won't mount until this resolves
+      validateAndSetStream(FALLBACK_STREAM_URL);
+    } catch (err) {
+      console.error('[WatchScreen] Failed to load movie data:', err);
+      if (mountedRef.current) setDataError(true);
+    } finally {
+      if (mountedRef.current) setDataLoading(false);
+    }
+  }, [id, validateAndSetStream]);
 
   useEffect(() => {
-    if (id) {
-      loadVideos();
+    loadMovieData();
+  }, [loadMovieData]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Controls auto-hide
+  // ─────────────────────────────────────────────────────────────────────────
+  const showControlsTemporarily = useCallback(() => {
+    if (!mountedRef.current) return;
+    setShowControls(true);
+    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    controlsTimerRef.current = setTimeout(() => {
+      if (mountedRef.current) setShowControls(false);
+    }, CONTROLS_HIDE_MS);
+  }, []);
+
+  useEffect(() => {
+    showControlsTemporarily();
+    return () => {
+      if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    };
+  }, [showControlsTemporarily]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Video event handlers
+  // ─────────────────────────────────────────────────────────────────────────
+  const handleVideoLoad = useCallback((data: any) => {
+    if (!mountedRef.current) return;
+    durationRef.current = data.duration ?? 0;
+    setDuration(data.duration ?? 0);
+    setIsBuffering(false);
+  }, []);
+
+  // Throttled: only push a re-render once per second so the Video component
+  // itself never triggers expensive React reconciliation every 250ms.
+  const handleVideoProgress = useCallback((data: any) => {
+    if (!mountedRef.current) return;
+    currentTimeRef.current = data.currentTime;
+    const now = Date.now();
+    if (now - lastProgressTime.current >= PROGRESS_THROTTLE_MS) {
+      lastProgressTime.current = now;
+      setCurrentTime(data.currentTime);
     }
-  }, [loadVideos, id]);
-
-  const handleBackPress = useCallback(() => {
-    router.back();
   }, []);
 
-  const handleSearchPress = useCallback(() => {
-    router.push('/(tabs)/search');
+  const handleVideoBuffer = useCallback(({ isBuffering: buf }: { isBuffering: boolean }) => {
+    if (!mountedRef.current) return;
+    setIsBuffering(buf);
   }, []);
 
+  const handleVideoError = useCallback(() => {
+    if (!mountedRef.current) return;
+    setVideoError(true);
+    setPaused(true);
+    setIsBuffering(false);
+  }, []);
+
+  const handleVideoEnd = useCallback(() => {
+    if (!mountedRef.current) return;
+    setPaused(true);
+    setCurrentTime(0);
+    currentTimeRef.current = 0;
+    // Seek back to start so controls show correct position
+    try { videoRef.current?.seek(0); } catch { /* no-op */ }
+    setShowControls(true);
+  }, []);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Playback controls
+  // ─────────────────────────────────────────────────────────────────────────
+  const togglePlay = useCallback(() => {
+    setPaused(p => !p);
+    showControlsTemporarily();
+  }, [showControlsTemporarily]);
+
+  const toggleMute = useCallback(() => {
+    setIsMuted(m => !m);
+    showControlsTemporarily();
+  }, [showControlsTemporarily]);
+
+  const skipBackward = useCallback(() => {
+    const target = Math.max(0, currentTimeRef.current - 10);
+    try { videoRef.current?.seek(target); } catch { /* no-op */ }
+    setCurrentTime(target);
+    currentTimeRef.current = target;
+    showControlsTemporarily();
+  }, [showControlsTemporarily]);
+
+  const skipForward = useCallback(() => {
+    const target = Math.min(durationRef.current, currentTimeRef.current + 10);
+    try { videoRef.current?.seek(target); } catch { /* no-op */ }
+    setCurrentTime(target);
+    currentTimeRef.current = target;
+    showControlsTemporarily();
+  }, [showControlsTemporarily]);
+
+  // Touch-to-seek: derive target time from tap X position on the track
+  const handleSeek = useCallback((e: GestureResponderEvent) => {
+    if (!durationRef.current) return;
+    const { locationX } = e.nativeEvent;
+    const containerWidth = playerSize.width - 28; // track padding
+    const pct = Math.min(1, Math.max(0, locationX / containerWidth));
+    const target = pct * durationRef.current;
+    try { videoRef.current?.seek(target); } catch { /* no-op */ }
+    setCurrentTime(target);
+    currentTimeRef.current = target;
+    showControlsTemporarily();
+  }, [playerSize.width, showControlsTemporarily]);
+
+  const handleContainerPress = useCallback(() => {
+    if (showControls) setShowControls(false);
+    else showControlsTemporarily();
+  }, [showControls, showControlsTemporarily]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Mode switching — ensure only ONE player is active at a time
+  // ─────────────────────────────────────────────────────────────────────────
+  const switchToMovie = useCallback(() => {
+    // Always pause native player first, then switch mode
+    setPaused(true);
+    setWebViewError(false);
+    setPlayMode('movie');
+    // Resume only if stream is valid and screen is focused
+    if (streamUrl && !streamError && !videoError) {
+      setTimeout(() => {
+        if (mountedRef.current) setPaused(false);
+      }, 100);
+    }
+  }, [streamUrl, streamError, videoError]);
+
+  const switchToTrailer = useCallback(() => {
+    // Pause the native player before the WebView mounts
+    setPaused(true);
+    setWebViewError(false);
+    setPlayMode('trailer');
+  }, []);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Global retry
+  // ─────────────────────────────────────────────────────────────────────────
   const handleRetry = useCallback(() => {
     setWebViewError(false);
-    loadVideos();
-  }, [loadVideos]);
+    setVideoError(false);
+    setStreamError(null);
+    setPaused(true);
+    setCurrentTime(0);
+    setDuration(0);
+    currentTimeRef.current = 0;
+    durationRef.current = 0;
+    if (dataError) {
+      loadMovieData();
+    } else if (playMode === 'movie') {
+      validateAndSetStream(FALLBACK_STREAM_URL);
+    } else {
+      setWebViewError(false);
+    }
+  }, [dataError, playMode, validateAndSetStream, loadMovieData]);
 
-  // Enhanced YouTube embed HTML with better error handling and debugging
-  const generateYouTubeHTML = useCallback((videoKey: string) => {
-    return `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <style>
-          * { 
-            margin: 0; 
-            padding: 0; 
-            box-sizing: border-box; 
-          }
-          html, body { 
-            width: 100%; 
-            height: 100%; 
-            background: #000; 
-            overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-          }
-          .video-container { 
-            position: relative; 
-            width: 100%; 
-            height: 100%; 
-            background: #000;
-            border-radius: 16px;
-            overflow: hidden;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          }
-          iframe { 
-            width: 100%; 
-            height: 100%; 
-            border: none;
-            background: #000;
-            border-radius: 16px;
-          }
-          .loading-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(135deg, #000 0%, #1a1a1a 100%);
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            color: #FFD700;
-            font-size: 18px;
-            font-weight: 600;
-            z-index: 10;
-            border-radius: 16px;
-            transition: opacity 0.5s ease;
-          }
-          .loading-overlay.hidden {
-            opacity: 0;
-            pointer-events: none;
-          }
-          .loading-spinner {
-            width: 40px;
-            height: 40px;
-            border: 3px solid rgba(255, 215, 0, 0.3);
-            border-top: 3px solid #FFD700;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin-bottom: 20px;
-          }
-          @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-          }
-          .error-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: #1a1a1a;
-            display: none;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            color: #ff6b6b;
-            font-size: 16px;
-            font-weight: 600;
-            z-index: 20;
-            border-radius: 16px;
-            text-align: center;
-            padding: 20px;
-          }
-          .error-overlay.visible {
-            display: flex;
-          }
-          .retry-btn {
-            background: #FFD700;
-            color: #000;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 12px;
-            font-weight: 700;
-            margin-top: 20px;
-            cursor: pointer;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="video-container">
-          <div class="loading-overlay" id="loadingOverlay">
-            <div class="loading-spinner"></div>
-            <div>Loading YouTube Player...</div>
-          </div>
-          
-          <div class="error-overlay" id="errorOverlay">
-            <div>Failed to load video</div>
-            <button class="retry-btn" onclick="retryLoad()">Retry</button>
-          </div>
-          
-          <iframe 
-            id="youtubeFrame"
-            src="https://www.youtube.com/embed/${videoKey}?autoplay=0&mute=0&playsinline=1&modestbranding=1&rel=0&showinfo=0&controls=1&fs=1&enablejsapi=1&iv_load_policy=3&cc_load_policy=0&origin=${Platform.OS === 'android' ? 'https://localhost' : 'https://example.com'}"
-            frameborder="0"
-            allowfullscreen
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-            referrerpolicy="strict-origin-when-cross-origin">
-          </iframe>
-        </div>
-        
-        <script>
-          console.log('YouTube player initializing with video key: ${videoKey}');
-          
-          let loadTimeout;
-          let retryCount = 0;
-          const maxRetries = 3;
-          
-          function hideLoading() {
-            const overlay = document.getElementById('loadingOverlay');
-            if (overlay && !overlay.classList.contains('hidden')) {
-              overlay.classList.add('hidden');
-              console.log('Loading overlay hidden');
-            }
-          }
-          
-          function showError() {
-            const loadingOverlay = document.getElementById('loadingOverlay');
-            const errorOverlay = document.getElementById('errorOverlay');
-            
-            if (loadingOverlay) loadingOverlay.style.display = 'none';
-            if (errorOverlay) errorOverlay.classList.add('visible');
-            
-            // Send error message to React Native
-            if (window.ReactNativeWebView) {
-              window.ReactNativeWebView.postMessage(JSON.stringify({
-                type: 'error',
-                message: 'Failed to load YouTube video'
-              }));
-            }
-          }
-          
-          function retryLoad() {
-            if (retryCount < maxRetries) {
-              retryCount++;
-              console.log('Retrying load, attempt:', retryCount);
-              
-              const errorOverlay = document.getElementById('errorOverlay');
-              const loadingOverlay = document.getElementById('loadingOverlay');
-              
-              if (errorOverlay) errorOverlay.classList.remove('visible');
-              if (loadingOverlay) {
-                loadingOverlay.style.display = 'flex';
-                loadingOverlay.classList.remove('hidden');
-              }
-              
-              // Reload iframe
-              const iframe = document.getElementById('youtubeFrame');
-              if (iframe) {
-                iframe.src = iframe.src;
-              }
-              
-              setupLoadHandlers();
-            }
-          }
-          
-          function setupLoadHandlers() {
-            const iframe = document.getElementById('youtubeFrame');
-            if (!iframe) return;
-            
-            // Clear any existing timeout
-            if (loadTimeout) clearTimeout(loadTimeout);
-            
-            iframe.onload = function() {
-              console.log('iframe loaded successfully');
-              hideLoading();
-              
-              // Send success message to React Native
-              if (window.ReactNativeWebView) {
-                window.ReactNativeWebView.postMessage(JSON.stringify({
-                  type: 'loaded',
-                  message: 'Video loaded successfully'
-                }));
-              }
-            };
-            
-            iframe.onerror = function(e) {
-              console.log('iframe error:', e);
-              showError();
-            };
-            
-            // Fallback timeout
-            loadTimeout = setTimeout(() => {
-              console.log('Load timeout reached');
-              const overlay = document.getElementById('loadingOverlay');
-              if (overlay && !overlay.classList.contains('hidden')) {
-                showError();
-              }
-            }, 15000); // 15 second timeout
-          }
-          
-          // Initialize
-          setupLoadHandlers();
-          
-          // Additional fallback to hide loading
-          setTimeout(() => {
-            const overlay = document.getElementById('loadingOverlay');
-            if (overlay && !overlay.classList.contains('hidden')) {
-              console.log('Fallback: hiding loading overlay');
-              hideLoading();
-            }
-          }, 8000);
-          
-          // YouTube API ready callback
-          function onYouTubeIframeAPIReady() {
-            console.log('YouTube API ready');
-            hideLoading();
-          }
-          
-          // Listen for messages from parent
-          window.addEventListener('message', function(event) {
-            console.log('Received message:', event.data);
-          });
-          
-          console.log('Script setup complete');
-        </script>
-      </body>
-      </html>
-    `;
-  }, []);
+  // ─────────────────────────────────────────────────────────────────────────
+  // YouTube embed HTML (memoised on videoKey — only re-generates when the
+  // trailer changes, not on every render)
+  // ─────────────────────────────────────────────────────────────────────────
+  const youTubeHTML = useMemo(() => {
+    if (!videoKey) return '';
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    html,body{width:100%;height:100%;background:#000;overflow:hidden}
+    .w{width:100%;height:100%;display:flex;align-items:center;justify-content:center;position:relative;background:#000}
+    iframe{width:100%;height:100%;border:none}
+    #ld{position:absolute;top:0;left:0;width:100%;height:100%;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#FFD700;font:16px sans-serif;z-index:9;transition:opacity .4s}
+    #ld.h{opacity:0;pointer-events:none}
+    .sp{width:36px;height:36px;border:3px solid rgba(255,215,0,.2);border-top:3px solid #FFD700;border-radius:50%;animation:r .8s linear infinite;margin-bottom:14px}
+    @keyframes r{to{transform:rotate(360deg)}}
+  </style>
+</head>
+<body>
+  <div class="w">
+    <div id="ld"><div class="sp"></div><div>Loading Trailer…</div></div>
+    <iframe id="p"
+      src="https://www.youtube.com/embed/${videoKey}?autoplay=1&mute=0&playsinline=1&modestbranding=1&rel=0&controls=1"
+      allowfullscreen
+      allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture"
+    ></iframe>
+  </div>
+  <script>
+    var p=document.getElementById('p'),l=document.getElementById('ld');
+    p.onload=function(){setTimeout(function(){l.classList.add('h')},600)};
+    // Safety: always hide loader after 8s to prevent infinite spinner
+    setTimeout(function(){l.classList.add('h')},8000);
+  </script>
+</body>
+</html>`;
+  }, [videoKey]);
 
-  if (loading) {
+  // ─────────────────────────────────────────────────────────────────────────
+  // Render
+  // ─────────────────────────────────────────────────────────────────────────
+  const movieTitle = movie?.title || movie?.name || 'Watch Stream';
+
+  // ── Full-screen loading ──────────────────────────────────────────────────
+  if (dataLoading) {
     return (
-      <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="light-content" backgroundColor="#0a0a0a" />
-        <View style={styles.loadingContainer}>
-          <View style={styles.loadingSpinner}>
-            <ActivityIndicator size="large" color="#FFD700" />
-            <View style={styles.loadingGlow} />
-            <View style={styles.loadingPulse} />
-          </View>
-          <Text style={styles.loadingText}>Loading video...</Text>
-          <Text style={styles.loadingSubtext}>Finding the best trailer for you</Text>
-          <View style={styles.loadingDots}>
-            <View style={[styles.loadingDot, styles.loadingDot1]} />
-            <View style={[styles.loadingDot, styles.loadingDot2]} />
-            <View style={[styles.loadingDot, styles.loadingDot3]} />
-          </View>
+      <SafeAreaView style={st.container}>
+        <StatusBar barStyle="light-content" backgroundColor="#0b0b0f" />
+        <View style={st.centreBox}>
+          <ActivityIndicator size="large" color="#FFD700" />
+          <Text style={st.loadTitle}>Preparing Stream…</Text>
+          <Text style={st.loadSub}>Fetching movie info and validating source</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // ── Full-screen error ────────────────────────────────────────────────────
+  if (dataError) {
+    return (
+      <SafeAreaView style={st.container}>
+        <StatusBar barStyle="light-content" backgroundColor="#0b0b0f" />
+        <View style={st.centreBox}>
+          <Ionicons name="cloud-offline-outline" size={64} color="#ff6b6b" />
+          <Text style={st.errTitle}>Failed to Load</Text>
+          <Text style={st.errDesc}>
+            Could not fetch movie data. Check your connection and try again.
+          </Text>
+          <TouchableOpacity style={st.retryBtn} onPress={handleRetry}>
+            <Ionicons name="refresh" size={18} color="#000" />
+            <Text style={st.retryBtnText}>Try Again</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={st.backLink} onPress={() => router.back()}>
+            <Text style={st.backLinkText}>← Go Back</Text>
+          </TouchableOpacity>
         </View>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#0a0a0a" />
-      
-      {/* Enhanced Header */}
-      <View style={styles.header}>
-        <View style={styles.headerBackground} />
-        <TouchableOpacity style={styles.backButton} onPress={handleBackPress}>
-          <View style={styles.buttonInner}>
+    <SafeAreaView style={st.container}>
+      <StatusBar barStyle="light-content" backgroundColor="#0b0b0f" />
+
+      {/* ── Header ──────────────────────────────────────────────────────── */}
+      <View style={st.header}>
+        <TouchableOpacity style={st.headerBtn} onPress={() => router.back()}>
+          <View style={st.btnInner}>
             <Ionicons name="chevron-back" size={24} color="#FFD700" />
           </View>
         </TouchableOpacity>
-        <View style={styles.headerTitleContainer}>
-          <Text style={styles.headerTitle}>Watch</Text>
-          <Text style={styles.headerSubtitle}>Movie Trailer</Text>
-          <View style={styles.headerUnderline} />
+
+        <View style={st.headerMid}>
+          <Text style={st.headerTitle} numberOfLines={1}>{movieTitle}</Text>
+          <Text style={st.headerSub}>
+            {playMode === 'movie' ? 'Feature Film (HD)' : 'Official Trailer'}
+          </Text>
         </View>
-        <TouchableOpacity style={styles.fullscreenButton} onPress={handleRetry}>
-          <View style={styles.buttonInner}>
-            <Ionicons name="refresh-outline" size={20} color="#FFD700" />
+
+        <TouchableOpacity style={st.headerBtn} onPress={handleRetry}>
+          <View style={st.btnInner}>
+            <Ionicons name="refresh" size={20} color="#FFD700" />
           </View>
         </TouchableOpacity>
       </View>
-      
-      {videoKey && !webViewError ? (
-        <View style={styles.playerContainer}>
-          {/* Player Wrapper with Enhanced Styling */}
-          <View style={styles.playerFrame}>
-            <View style={styles.playerShadow} />
-            <View style={styles.playerGlow} />
-            <WebView
-              key={`webview-${videoKey}-${Date.now()}`} // Force re-render on retry
-              style={[styles.webView, { width: playerSize.width, height: playerSize.height }]}
-              source={{ html: generateYouTubeHTML(videoKey) }}
-              allowsFullscreenVideo={true}
-              mediaPlaybackRequiresUserAction={Platform.OS === 'ios'}
-              javaScriptEnabled={true}
-              domStorageEnabled={true}
-              startInLoadingState={false}
-              scalesPageToFit={Platform.OS === 'android'}
-              mixedContentMode="compatibility"
-              originWhitelist={['*']}
-              allowsInlineMediaPlayback={true}
-              bounces={false}
-              scrollEnabled={false}
-              onMessage={(event) => {
-                try {
-                  const data = JSON.parse(event.nativeEvent.data);
-                  console.log('WebView message:', data);
-                  
-                  if (data.type === 'error') {
-                    setWebViewError(true);
-                  }
-                } catch (e) {
-                  console.log('Failed to parse WebView message:', e);
-                }
-              }}
-              onLoad={() => {
-                console.log('WebView loaded successfully');
-              }}
-              onError={(syntheticEvent) => {
-                const { nativeEvent } = syntheticEvent;
-                console.warn('WebView error: ', nativeEvent);
-                setWebViewError(true);
-              }}
-              onHttpError={(syntheticEvent) => {
-                const { nativeEvent } = syntheticEvent;
-                console.warn('WebView HTTP error: ', nativeEvent);
-                if (nativeEvent.statusCode >= 400) {
-                  setWebViewError(true);
-                }
-              }}
-              onLoadStart={() => console.log('WebView started loading')}
-              onLoadEnd={() => console.log('WebView finished loading')}
-              renderError={() => (
-                <View style={styles.webViewError}>
-                  <Ionicons name="warning-outline" size={48} color="#ff6b6b" />
-                  <Text style={styles.webViewErrorText}>Failed to load video player</Text>
-                  <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
-                    <Text style={styles.retryButtonText}>Retry</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
+
+      {/* ── Mode Toggle (only shown when a trailer exists) ────────────── */}
+      {videoKey && (
+        <View style={st.segRow}>
+          <TouchableOpacity
+            style={[st.seg, playMode === 'movie' && st.segActive]}
+            onPress={switchToMovie}
+          >
+            <Ionicons
+              name="play-circle"
+              size={15}
+              color={playMode === 'movie' ? '#000' : '#FFD700'}
             />
-            <View style={styles.playerBorder} />
-            <View style={styles.playerCornerAccents}>
-              <View style={[styles.cornerAccent, styles.topLeft]} />
-              <View style={[styles.cornerAccent, styles.topRight]} />
-              <View style={[styles.cornerAccent, styles.bottomLeft]} />
-              <View style={[styles.cornerAccent, styles.bottomRight]} />
-            </View>
-          </View>
-          
-          {/* Video Controls Info */}
-          <View style={styles.videoInfo}>
-            <View style={styles.videoInfoRow}>
-              <View style={styles.liveIndicator}>
-                <View style={styles.liveDot} />
-                <View style={styles.livePulse} />
-                <Text style={styles.liveText}>Now Playing</Text>
-              </View>
-              <View style={styles.qualityBadge}>
-                <Text style={styles.qualityText}>HD</Text>
-                <View style={styles.qualityShine} />
-              </View>
-            </View>
-            <Text style={styles.videoDescription}>
-              Enjoy the trailer in high quality. Tap the refresh button above to reload if needed.
+            <Text style={[st.segText, playMode === 'movie' && st.segTextActive]}>
+              Movie (HD)
             </Text>
-            <View style={styles.videoTips}>
-              <View style={styles.tipItem}>
-                <Ionicons name="volume-high" size={16} color="#FFD700" />
-                <Text style={styles.tipText}>Tap to unmute</Text>
-              </View>
-              <View style={styles.tipItem}>
-                <Ionicons name="expand" size={16} color="#FFD700" />
-                <Text style={styles.tipText}>Fullscreen available</Text>
-              </View>
-            </View>
-          </View>
-        </View>
-      ) : (
-        <View style={styles.noVideoContainer}>
-          <View style={styles.noVideoIconContainer}>
-            <Ionicons 
-              name={webViewError ? "warning-outline" : "film-outline"} 
-              size={80} 
-              color={webViewError ? "#ff6b6b" : "#FFD700"} 
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[st.seg, playMode === 'trailer' && st.segActive]}
+            onPress={switchToTrailer}
+          >
+            <Ionicons
+              name="film"
+              size={15}
+              color={playMode === 'trailer' ? '#000' : '#FFD700'}
             />
-            <View style={styles.noVideoIconGlow} />
-            <View style={styles.noVideoIconPulse} />
-          </View>
-          <Text style={styles.noVideoTitle}>
-            {webViewError ? "Video Player Error" : "No Trailer Available"}
-          </Text>
-          <Text style={styles.noVideoText}>
-            {webViewError 
-              ? "There was a problem loading the video player. Please try again or check your connection."
-              : "We couldn't find a trailer for this title. Check back later or explore other movies."
-            }
-          </Text>
-          
-          <View style={styles.noVideoActions}>
-            {webViewError && (
-              <TouchableOpacity 
-                style={styles.retryBtn} 
-                onPress={handleRetry}
-                activeOpacity={0.8}
-              >
-                <View style={styles.buttonGradient} />
-                <Ionicons name="refresh" size={18} color="#000" />
-                <Text style={styles.backToDetailsText}>Retry</Text>
-              </TouchableOpacity>
-            )}
-            
-            <TouchableOpacity 
-              style={styles.backToDetailsBtn} 
-              onPress={handleBackPress}
-              activeOpacity={0.8}
-            >
-              <View style={styles.buttonGradient} />
-              <Ionicons name="arrow-back" size={18} color="#000" />
-              <Text style={styles.backToDetailsText}>Back to Details</Text>
-            </TouchableOpacity>
-             
-            <TouchableOpacity 
-              style={styles.searchMoreBtn}
-              onPress={handleSearchPress}
-              activeOpacity={0.8}
-            >
-              <View style={styles.searchBtnBorder} />
-              <Ionicons name="search" size={18} color="#FFD700" />
-              <Text style={styles.searchMoreText}>Search More</Text>
-            </TouchableOpacity>
-          </View>
-          
-          <View style={styles.suggestionContainer}>
-            <Text style={styles.suggestionTitle}>Try these instead:</Text>
-            <View style={styles.suggestionTags}>
-              <Text style={styles.suggestionTag}>Popular Movies</Text>
-              <Text style={styles.suggestionTag}>Latest Releases</Text>
-              <Text style={styles.suggestionTag}>Top Rated</Text>
-            </View>
-          </View>
+            <Text style={[st.segText, playMode === 'trailer' && st.segTextActive]}>
+              Trailer
+            </Text>
+          </TouchableOpacity>
         </View>
       )}
+
+      {/* ── Scrollable Content ───────────────────────────────────────────── */}
+      <ScrollView
+        style={st.scroll}
+        contentContainerStyle={st.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* ── Player Frame ─────────────────────────────────────────────── */}
+        {/* Only render any media when the screen is focused. On blur, replace
+            with a lightweight placeholder so ALL media is fully unmounted. */}
+        {isFocused ? (
+          <View style={[st.playerFrame, { width: playerSize.width, height: playerSize.height }]}>
+
+            {/* ① Stream validation spinner */}
+            {validating && playMode === 'movie' && (
+              <View style={st.fullOverlay}>
+                <ActivityIndicator size="large" color="#FFD700" />
+                <Text style={st.overlayMsg}>Validating stream…</Text>
+                <Text style={st.overlaySub}>Checking source availability</Text>
+              </View>
+            )}
+
+            {/* ② Player-level error overlay (stream / network / video error) */}
+            {!validating && (streamError || videoError || (webViewError && playMode === 'trailer')) && (
+              <View style={st.fullOverlay}>
+                <Ionicons name="warning-outline" size={52} color="#ff6b6b" />
+                <Text style={st.overlayErrTitle}>Playback Interrupted</Text>
+                <Text style={st.overlayErrDesc}>
+                  {streamError ?? 'The video failed to load. Tap retry to reconnect.'}
+                </Text>
+                <TouchableOpacity style={st.retryBtn} onPress={handleRetry}>
+                  <Ionicons name="refresh" size={16} color="#000" />
+                  <Text style={st.retryBtnText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* ③ YouTube Trailer WebView
+                 – Only mounts in 'trailer' mode when there's a valid key
+                 – Stable key (webview-{videoKey}) prevents re-creation loops */}
+            {playMode === 'trailer' && videoKey && !webViewError && (
+              <WebView
+                key={`webview-${videoKey}`}
+                style={st.webView}
+                source={{ html: youTubeHTML }}
+                allowsFullscreenVideo
+                mediaPlaybackRequiresUserAction={false}
+                javaScriptEnabled
+                domStorageEnabled
+                startInLoadingState={false}
+                scalesPageToFit
+                originWhitelist={['*']}
+                allowsInlineMediaPlayback
+                scrollEnabled={false}
+                bounces={false}
+                onError={() => setWebViewError(true)}
+                onHttpError={() => setWebViewError(true)}
+              />
+            )}
+
+            {/* ④ Native Video Player
+                 – ONLY mounts after streamUrl has been validated (not null)
+                 – NEVER renders if there is a stream error or video error
+                 – effectivePaused merges all pause conditions into one prop */}
+            {playMode === 'movie' && streamUrl && !streamError && !videoError && !validating && (
+              <TouchableOpacity
+                activeOpacity={1}
+                style={st.videoWrap}
+                onPress={handleContainerPress}
+              >
+                <Video
+                  ref={videoRef}
+                  source={{ uri: streamUrl }}
+                  style={st.video}
+                  paused={effectivePaused}
+                  resizeMode="contain"
+                  muted={isMuted}
+                  playInBackground={false}
+                  playWhenInactive={false}
+                  progressUpdateInterval={500}
+                  onLoad={handleVideoLoad}
+                  onProgress={handleVideoProgress}
+                  onBuffer={handleVideoBuffer}
+                  onError={handleVideoError}
+                  onEnd={handleVideoEnd}
+                />
+
+                {showControls && (
+                  <HUDControls
+                    paused={effectivePaused}
+                    isMuted={isMuted}
+                    currentTime={currentTime}
+                    duration={duration}
+                    isBuffering={isBuffering}
+                    onPlay={togglePlay}
+                    onMute={toggleMute}
+                    onSkipBack={skipBackward}
+                    onSkipForward={skipForward}
+                    onSeek={handleSeek}
+                  />
+                )}
+              </TouchableOpacity>
+            )}
+
+            {/* Corner tech accents (purely decorative) */}
+            <View style={st.cTL} pointerEvents="none" />
+            <View style={st.cTR} pointerEvents="none" />
+            <View style={st.cBL} pointerEvents="none" />
+            <View style={st.cBR} pointerEvents="none" />
+          </View>
+        ) : (
+          /* Screen not focused — render nothing that plays audio/video */
+          <View style={[st.playerFrame, st.playerPlaceholder,
+            { width: playerSize.width, height: playerSize.height }]}>
+            <ActivityIndicator size="small" color="#FFD700" />
+            <Text style={st.overlayMsg}>Resuming…</Text>
+          </View>
+        )}
+
+        {/* ── Details Tray ─────────────────────────────────────────────── */}
+        <View style={st.tray}>
+          <View style={st.badgeRow}>
+            <View style={st.badge}>
+              <Text style={st.badgeText}>{movie?.genres?.[0]?.name ?? 'Streaming'}</Text>
+            </View>
+            <View style={st.badge}>
+              <Text style={st.badgeText}>
+                {movie?.release_date
+                  ? new Date(movie.release_date).getFullYear()
+                  : '2026'}
+              </Text>
+            </View>
+            {movie?.vote_average != null && (
+              <View style={st.ratingBadge}>
+                <Ionicons name="star" size={12} color="#FFD700" />
+                <Text style={st.ratingText}>{movie.vote_average.toFixed(1)}</Text>
+              </View>
+            )}
+          </View>
+
+          <Text style={st.synopsis}>
+            {movie?.overview ??
+              'Enjoy fast, buffer-free streaming. Toggle between the feature film and the official trailer above.'}
+          </Text>
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    backgroundColor: '#0a0a0a' 
-  },
-  
-  // Loading State Styles
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 32,
-  },
-  loadingSpinner: {
-    position: 'relative',
-    marginBottom: 32,
-  },
-  loadingGlow: {
-    position: 'absolute',
-    top: -25,
-    left: -25,
-    right: -25,
-    bottom: -25,
-    backgroundColor: 'rgba(255, 215, 0, 0.15)',
-    borderRadius: 50,
-    zIndex: -1,
-  },
-  loadingPulse: {
-    position: 'absolute',
-    top: -35,
-    left: -35,
-    right: -35,
-    bottom: -35,
-    backgroundColor: 'rgba(255, 215, 0, 0.08)',
-    borderRadius: 60,
-    zIndex: -2,
-  },
-  loadingText: {
-    color: '#FFD700',
-    fontSize: 20,
-    fontWeight: '800',
-    marginBottom: 8,
-    textAlign: 'center',
-    letterSpacing: 0.5,
-  },
-  loadingSubtext: {
-    color: '#888888',
-    fontSize: 15,
-    textAlign: 'center',
-    fontWeight: '500',
-    marginBottom: 24,
-  },
-  loadingDots: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  loadingDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#FFD700',
-  },
-  loadingDot1: {
-    opacity: 1,
-  },
-  loadingDot2: {
-    opacity: 0.7,
-  },
-  loadingDot3: {
-    opacity: 0.4,
-  },
+// ─────────────────────────────────────────────────────────────────────────────
+// Styles
+// ─────────────────────────────────────────────────────────────────────────────
+const st = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#0b0b0f' },
 
-  // Header Styles
-  header: {
-    position: 'relative',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 18,
-    backgroundColor: '#1a1a1a',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 215, 0, 0.15)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#FFD700',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 8,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
+  // Full-screen loading / error states
+  centreBox: {
+    flex: 1, justifyContent: 'center', alignItems: 'center',
+    padding: 32, gap: 12,
   },
-  headerBackground: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(255, 215, 0, 0.03)',
-  },
-  backButton: {
-    borderRadius: 18,
-    backgroundColor: 'rgba(255, 215, 0, 0.12)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 215, 0, 0.25)',
-    overflow: 'hidden',
-  },
-  buttonInner: {
-    padding: 12,
-  },
-  headerTitleContainer: {
-    alignItems: 'center',
-    position: 'relative',
-  },
-  headerTitle: {
-    color: '#FFD700',
-    fontSize: 22,
-    fontWeight: '900',
-    letterSpacing: 1,
-    textShadowColor: 'rgba(255, 215, 0, 0.3)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-  },
-  headerSubtitle: {
-    color: '#888888',
-    fontSize: 13,
-    fontWeight: '600',
-    marginTop: 2,
-    letterSpacing: 0.5,
-  },
-  headerUnderline: {
-    position: 'absolute',
-    bottom: -8,
-    left: -10,
-    right: -10,
-    height: 1,
-    backgroundColor: 'rgba(255, 215, 0, 0.3)',
-  },
-  fullscreenButton: {
-    borderRadius: 18,
-    backgroundColor: 'rgba(255, 215, 0, 0.12)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 215, 0, 0.25)',
-    overflow: 'hidden',
-  },
-
-  // Player Styles
-  playerContainer: {
-    flex: 1,
-    backgroundColor: '#000000',
-    paddingTop: 24,
-  },
-  playerFrame: {
-    position: 'relative',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 16,
-    marginBottom: 20,
-  },
-  playerShadow: {
-    position: 'absolute',
-    top: 8,
-    left: 24,
-    right: 24,
-    bottom: 8,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    borderRadius: 20,
-    zIndex: -3,
-  },
-  playerGlow: {
-    position: 'absolute',
-    top: -6,
-    left: 10,
-    right: 10,
-    bottom: -6,
-    backgroundColor: 'rgba(255, 215, 0, 0.08)',
-    borderRadius: 22,
-    zIndex: -2,
-  },
-  webView: {
-    backgroundColor: '#000000',
-    borderRadius: 16,
-    overflow: 'hidden',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#FFD700',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.2,
-        shadowRadius: 12,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  webViewError: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#1a1a1a',
-    borderRadius: 16,
-    padding: 20,
-  },
-  webViewErrorText: {
-    color: '#ff6b6b',
-    fontSize: 16,
-    fontWeight: '600',
-    marginTop: 16,
-    marginBottom: 20,
-    textAlign: 'center',
-  },
-  retryButton: {
-    backgroundColor: '#FFD700',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  retryButtonText: {
-    color: '#000',
-    fontWeight: '700',
-    fontSize: 16,
-  },
-  playerBorder: {
-    position: 'absolute',
-    top: -3,
-    left: 13,
-    right: 13,
-    bottom: -3,
-    borderWidth: 2,
-    borderColor: 'rgba(255, 215, 0, 0.4)',
-    borderRadius: 19,
-    zIndex: -1,
-  },
-  playerCornerAccents: {
-    position: 'absolute',
-    top: -3,
-    left: 13,
-    right: 13,
-    bottom: -3,
-  },
-  cornerAccent: {
-    position: 'absolute',
-    width: 16,
-    height: 16,
-    borderColor: '#FFD700',
-    borderWidth: 3,
-  },
-  topLeft: {
-    top: 0,
-    left: 0,
-    borderRightWidth: 0,
-    borderBottomWidth: 0,
-    borderTopLeftRadius: 19,
-  },
-  topRight: {
-    top: 0,
-    right: 0,
-    borderLeftWidth: 0,
-    borderBottomWidth: 0,
-    borderTopRightRadius: 19,
-  },
-  bottomLeft: {
-    bottom: 0,
-    left: 0,
-    borderRightWidth: 0,
-    borderTopWidth: 0,
-    borderBottomLeftRadius: 19,
-  },
-  bottomRight: {
-    bottom: 0,
-    right: 0,
-    borderLeftWidth: 0,
-    borderTopWidth: 0,
-    borderBottomRightRadius: 19,
-  },
-  videoInfo: {
-    paddingHorizontal: 24,
-    paddingTop: 4,
-  },
-  videoInfoRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  liveIndicator: {
-    position: 'relative',
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 215, 0, 0.12)',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 14,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 215, 0, 0.25)',
-    overflow: 'hidden',
-  },
-  liveDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#FFD700',
-    marginRight: 10,
-    shadowColor: '#FFD700',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  livePulse: {
-    position: 'absolute',
-    left: 9,
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: 'rgba(255, 215, 0, 0.3)',
-  },
-  liveText: {
-    color: '#FFD700',
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  qualityBadge: {
-    position: 'relative',
-    backgroundColor: '#FFD700',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 10,
-    overflow: 'hidden',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#FFD700',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.4,
-        shadowRadius: 4,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
-  },
-  qualityShine: {
-    position: 'absolute',
-    top: 0,
-    left: -20,
-    width: 20,
-    height: '100%',
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
-    transform: [{ skewX: '-20deg' }],
-  },
-  qualityText: {
-    color: '#000000',
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0.5,
-  },
-  videoDescription: {
-    color: '#cccccc',
-    fontSize: 15,
-    lineHeight: 22,
-    textAlign: 'center',
-    marginBottom: 20,
-    fontWeight: '500',
-  },
-  videoTips: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingHorizontal: 20,
-  },
-  tipItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 215, 0, 0.08)',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 215, 0, 0.15)',
-  },
-  tipText: {
-    color: '#888888',
-    fontSize: 12,
-    fontWeight: '600',
-    marginLeft: 6,
-  },
-
-  // No Video Styles
-  noVideoContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 40,
-  },
-  noVideoIconContainer: {
-    position: 'relative',
-    backgroundColor: 'rgba(255, 215, 0, 0.1)',
-    borderRadius: 70,
-    padding: 40,
-    marginBottom: 36,
-    borderWidth: 2.5,
-    borderColor: 'rgba(255, 215, 0, 0.25)',
-    overflow: 'hidden',
-  },
-  noVideoIconGlow: {
-    position: 'absolute',
-    top: -15,
-    left: -15,
-    right: -15,
-    bottom: -15,
-    backgroundColor: 'rgba(255, 215, 0, 0.08)',
-    borderRadius: 85,
-    zIndex: -1,
-  },
-  noVideoIconPulse: {
-    position: 'absolute',
-    top: -25,
-    left: -25,
-    right: -25,
-    bottom: -25,
-    backgroundColor: 'rgba(255, 215, 0, 0.04)',
-    borderRadius: 95,
-    zIndex: -2,
-  },
-  noVideoTitle: {
-    color: '#FFD700',
-    fontSize: 26,
-    fontWeight: '900',
-    marginBottom: 16,
-    textAlign: 'center',
-    letterSpacing: -0.5,
-    textShadowColor: 'rgba(255, 215, 0, 0.3)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-  },
-  noVideoText: {
-    color: '#cccccc',
-    fontSize: 17,
-    textAlign: 'center',
-    lineHeight: 26,
-    marginBottom: 44,
-    maxWidth: 320,
-    fontWeight: '500',
-  },
-  noVideoActions: {
-    flexDirection: 'row',
-    gap: 20,
-    marginBottom: 32,
-    flexWrap: 'wrap',
-    justifyContent: 'center',
+  loadTitle: { color: '#FFD700', fontSize: 20, fontWeight: '900', marginTop: 16 },
+  loadSub:   { color: '#888', fontSize: 14, textAlign: 'center' },
+  errTitle:  { color: '#ff6b6b', fontSize: 20, fontWeight: '800', marginTop: 16 },
+  errDesc: {
+    color: '#888', fontSize: 14, textAlign: 'center',
+    lineHeight: 20, maxWidth: 280,
   },
   retryBtn: {
-    position: 'relative',
-    backgroundColor: '#ff6b6b',
-    paddingHorizontal: 28,
-    paddingVertical: 18,
-    borderRadius: 24,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    overflow: 'hidden',
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#FFD700', paddingHorizontal: 24, paddingVertical: 14,
+    borderRadius: 16, marginTop: 8,
+  },
+  retryBtnText: { color: '#000', fontWeight: '800', fontSize: 15 },
+  backLink:     { marginTop: 14 },
+  backLinkText: { color: '#9aa0a6', fontSize: 14 },
+
+  // Header
+  header: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingVertical: 14,
+    backgroundColor: '#111118',
+    borderBottomWidth: 1, borderBottomColor: '#1d1d2b',
+  },
+  headerBtn: {
+    backgroundColor: 'rgba(255,215,0,0.1)', borderRadius: 14,
+    borderWidth: 1, borderColor: 'rgba(255,215,0,0.2)',
+  },
+  btnInner:    { padding: 10 },
+  headerMid:   { flex: 1, alignItems: 'center', marginHorizontal: 12 },
+  headerTitle: { color: '#fff', fontSize: 17, fontWeight: '800', textAlign: 'center' },
+  headerSub:   { color: '#FFD700', fontSize: 11, fontWeight: '600', marginTop: 2 },
+
+  // Mode toggle
+  segRow: {
+    flexDirection: 'row', backgroundColor: '#12121c',
+    marginHorizontal: 16, marginTop: 14, padding: 4,
+    borderRadius: 14, borderWidth: 1, borderColor: '#1d1d2b',
+  },
+  seg: {
+    flex: 1, flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'center', gap: 6, paddingVertical: 11, borderRadius: 10,
+  },
+  segActive:     { backgroundColor: '#FFD700' },
+  segText:       { color: '#FFD700', fontSize: 13, fontWeight: '700' },
+  segTextActive: { color: '#000' },
+
+  // Scrollable area
+  scroll:       { flex: 1 },
+  scrollContent: { alignItems: 'center', paddingTop: 22, paddingBottom: 48 },
+
+  // Player container
+  playerFrame: {
+    position: 'relative', backgroundColor: '#000',
+    borderRadius: 18, overflow: 'hidden',
+    borderWidth: 1.5, borderColor: 'rgba(255,215,0,0.3)',
     ...Platform.select({
       ios: {
-        shadowColor: '#ff6b6b',
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.5,
-        shadowRadius: 12,
+        shadowColor: '#FFD700', shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.15, shadowRadius: 12,
       },
-      android: {
-        elevation: 10,
-      },
+      android: { elevation: 8 },
     }),
   },
-  backToDetailsBtn: {
-    position: 'relative',
-    backgroundColor: '#FFD700',
-    paddingHorizontal: 28,
-    paddingVertical: 18,
-    borderRadius: 24,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    overflow: 'hidden',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#FFD700',
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.5,
-        shadowRadius: 12,
-      },
-      android: {
-        elevation: 10,
-      },
-    }),
+  playerPlaceholder: { justifyContent: 'center', alignItems: 'center', gap: 10 },
+
+  // In-player overlays
+  fullOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#0c0c10',
+    justifyContent: 'center', alignItems: 'center',
+    padding: 24, gap: 10, zIndex: 20,
   },
-  buttonGradient: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(255, 215, 0, 0.15)',
+  overlayMsg:      { color: '#888', fontSize: 14, textAlign: 'center', marginTop: 8 },
+  overlaySub:      { color: '#555', fontSize: 12, textAlign: 'center' },
+  overlayErrTitle: { color: '#ff6b6b', fontSize: 18, fontWeight: '800' },
+  overlayErrDesc: {
+    color: '#888', fontSize: 13, textAlign: 'center',
+    lineHeight: 18, maxWidth: 260,
   },
-  backToDetailsText: {
-    color: '#000000',
-    fontWeight: '800',
-    fontSize: 16,
-    letterSpacing: 0.3,
+
+  // WebView / Native Video
+  webView:  { flex: 1, backgroundColor: '#000' },
+  videoWrap: { flex: 1, width: '100%', height: '100%' },
+  video:     { width: '100%', height: '100%', backgroundColor: '#000' },
+
+  // Corner accents (decorative)
+  cTL: {
+    position: 'absolute', top: 0, left: 0, width: 14, height: 14,
+    borderLeftWidth: 3, borderTopWidth: 3, borderColor: '#FFD700', borderTopLeftRadius: 18,
   },
-  searchMoreBtn: {
-    position: 'relative',
-    backgroundColor: 'transparent',
-    borderWidth: 2.5,
-    borderColor: '#FFD700',
-    paddingHorizontal: 28,
-    paddingVertical: 18,
-    borderRadius: 24,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    overflow: 'hidden',
+  cTR: {
+    position: 'absolute', top: 0, right: 0, width: 14, height: 14,
+    borderRightWidth: 3, borderTopWidth: 3, borderColor: '#FFD700', borderTopRightRadius: 18,
   },
-  searchBtnBorder: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(255, 215, 0, 0.05)',
+  cBL: {
+    position: 'absolute', bottom: 0, left: 0, width: 14, height: 14,
+    borderLeftWidth: 3, borderBottomWidth: 3, borderColor: '#FFD700', borderBottomLeftRadius: 18,
   },
-  searchMoreText: {
-    color: '#FFD700',
-    fontWeight: '800',
-    fontSize: 16,
-    letterSpacing: 0.3,
+  cBR: {
+    position: 'absolute', bottom: 0, right: 0, width: 14, height: 14,
+    borderRightWidth: 3, borderBottomWidth: 3, borderColor: '#FFD700', borderBottomRightRadius: 18,
   },
-  suggestionContainer: {
-    alignItems: 'center',
+
+  // Details tray
+  tray:        { width: '100%', paddingHorizontal: 20, paddingTop: 24 },
+  badgeRow:    { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 14 },
+  badge: {
+    backgroundColor: '#161622', paddingHorizontal: 11, paddingVertical: 5,
+    borderRadius: 8, borderWidth: 1, borderColor: '#232335',
   },
-  suggestionTitle: {
-    color: '#888888',
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 12,
-    letterSpacing: 0.3,
+  badgeText:   { color: '#9aa0a6', fontSize: 12, fontWeight: '700' },
+  ratingBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: 'rgba(255,215,0,0.1)', paddingHorizontal: 9, paddingVertical: 4,
+    borderRadius: 8,
   },
-  suggestionTags: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    justifyContent: 'center',
+  ratingText:  { color: '#FFD700', fontSize: 12, fontWeight: '800' },
+  synopsis:    { color: '#a0aec0', fontSize: 14, lineHeight: 22 },
+});
+
+// HUD-specific stylesheet (kept separate so tree-shaking keeps the component small)
+const hudSt = StyleSheet.create({
+  spinnerWrap: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center', alignItems: 'center', zIndex: 5,
   },
-  suggestionTag: {
-    color: '#FFD700',
-    backgroundColor: 'rgba(255, 215, 0, 0.1)',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 16,
-    fontSize: 13,
-    fontWeight: '600',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 215, 0, 0.2)',
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'space-between',
+    padding: 14, zIndex: 6,
+  },
+  topRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+  },
+  liveTag: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: 'rgba(255,215,0,0.15)',
+    paddingHorizontal: 9, paddingVertical: 4,
+    borderRadius: 7, borderWidth: 1, borderColor: 'rgba(255,215,0,0.3)',
+  },
+  liveDot: {
+    width: 6, height: 6, borderRadius: 3,
+    backgroundColor: '#FFD700', marginRight: 5,
+  },
+  liveText:    { color: '#FFD700', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
+  qualityTag:  { backgroundColor: '#fff', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 5 },
+  qualityText: { color: '#000', fontSize: 8, fontWeight: '900' },
+
+  centreRow: {
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 34,
+  },
+  skipBtn:   { alignItems: 'center' },
+  skipLabel: { color: '#fff', fontSize: 10, fontWeight: '700', marginTop: 3 },
+  playBtn: {
+    backgroundColor: '#FFD700', width: 66, height: 66, borderRadius: 33,
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: '#FFD700', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35, shadowRadius: 8, elevation: 6,
+  },
+
+  bottomCol: { gap: 10 },
+  seekbar:   { height: 12, justifyContent: 'center', width: '100%' },
+  seekTrack: {
+    height: 4, backgroundColor: 'rgba(255,255,255,0.25)',
+    borderRadius: 2, overflow: 'hidden',
+  },
+  seekFill:  { height: '100%', backgroundColor: '#FFD700', borderRadius: 2 },
+  timerRow:  {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+  },
+  timerText: {
+    color: '#fff', fontSize: 12, fontWeight: '600',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  muteBtn: {
+    backgroundColor: 'rgba(255,215,0,0.15)', padding: 7, borderRadius: 9,
+    borderWidth: 1, borderColor: 'rgba(255,215,0,0.3)',
   },
 });

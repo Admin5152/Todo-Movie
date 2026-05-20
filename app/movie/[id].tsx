@@ -6,7 +6,6 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
     ActivityIndicator,
     Dimensions,
-    Image,
     Platform,
     ScrollView,
     StatusBar,
@@ -15,6 +14,7 @@ import {
     TouchableOpacity,
     View
 } from 'react-native';
+import { Image } from 'expo-image';
 import { getMovieDetails } from '../../lib/tmdb';
 import { useMyList } from '../../lib/useMyList';
 
@@ -92,6 +92,8 @@ export default function MovieDetails() {
             <Image
               source={{ uri: `https://image.tmdb.org/t/p/w1280${movie.backdrop_path}` }}
               style={styles.backdropImage}
+              contentFit="cover"
+              transition={300}
             />
             <LinearGradient
               colors={['transparent', 'rgba(11, 11, 15, 0.8)', '#0b0b0f']}
@@ -125,8 +127,8 @@ export default function MovieDetails() {
                 require('../../assets/images/Todo.png')
               } 
               style={styles.poster}
-              resizeMode="cover"
-              loadingIndicatorSource={require('../../assets/images/Todo.png')}
+              contentFit="cover"
+              transition={200}
             />
             <View style={styles.posterShadow} />
           </View>

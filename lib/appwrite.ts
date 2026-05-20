@@ -9,6 +9,27 @@ export const client = new Client()
 const account = new Account(client);
 const databases = new Databases(client);
 
+// Attach custom ping helper to client to mimic the Android SDK API
+(client as any).ping = async function() {
+  console.log('Pinging Appwrite endpoint:', this.config.endpoint);
+  try {
+    const response = await fetch(this.config.endpoint);
+    console.log('Appwrite HTTP Ping status:', response.status);
+    
+    // Perform an SDK call to generate a log entry in the Appwrite Console
+    try {
+      await account.get();
+      console.log('Appwrite Session Ping: Active session found.');
+    } catch (e: any) {
+      console.log('Appwrite Session Ping:', e.message || 'No active session (connected successfully)');
+    }
+    return response.ok;
+  } catch (error) {
+    console.error('Appwrite Ping failed:', error);
+    return false;
+  }
+};
+
 // Auth types
 export interface User {
   $id: string;

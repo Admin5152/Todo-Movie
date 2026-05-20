@@ -3,7 +3,8 @@ import { getCategory } from '@/lib/tmdb';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Dimensions, Image, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Dimensions, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Image } from 'expo-image';
 
 const screenWidth = Dimensions.get('window').width;
 
@@ -35,7 +36,7 @@ type Movie = {
   vote_average?: number;
 };
 
-function Row({ title, data, loading }: { title: string; data: Movie[]; loading: boolean }) {
+const Row = React.memo(function Row({ title, data, loading }: { title: string; data: Movie[]; loading: boolean }) {
   return (
     <View style={styles.row}>
       <View style={styles.rowHeader}>
@@ -72,7 +73,8 @@ function Row({ title, data, loading }: { title: string; data: Movie[]; loading: 
                     : require('../../assets/images/Todo.png')
                   } 
                   style={styles.poster}
-                  resizeMode="cover"
+                  contentFit="cover"
+                  transition={200}
                 />
                 {movie.vote_average && movie.vote_average > 0 && (
                   <View style={styles.ratingBadge}>
@@ -102,7 +104,8 @@ function Row({ title, data, loading }: { title: string; data: Movie[]; loading: 
       )}
     </View>
   );
-}
+});
+
 
 export default function HomeTab() {
   const [trending, setTrending] = useState<Movie[]>([]);

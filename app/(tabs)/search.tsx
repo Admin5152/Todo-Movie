@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, StyleSheet, Text, TextInput, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, FlatList, StyleSheet, Text, TextInput, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import { Image } from 'expo-image';
 import { searchMovies } from '../../lib/tmdb';
 
 export default function SearchScreen() {
@@ -52,9 +53,9 @@ export default function SearchScreen() {
       <Image 
         source={item.poster_path ? { uri: `https://image.tmdb.org/t/p/w500${item.poster_path}` } : require('../../assets/images/Todo.png')} 
         style={{ width: '100%', aspectRatio: 2/3, borderRadius: 12, backgroundColor: '#14141c', borderWidth: 1, borderColor: '#232335' }} 
-        resizeMode="cover"
-        loadingIndicatorSource={require('../../assets/images/Todo.png')}
-        fadeDuration={200}
+        contentFit="cover"
+        placeholder={require('../../assets/images/Todo.png')}
+        transition={200}
       />
       <Text numberOfLines={1} style={{ color: '#dfe3e6', marginTop: 6 }}>{item.title || item.name}</Text>
     </TouchableOpacity>

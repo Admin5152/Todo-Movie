@@ -2,7 +2,8 @@ import { useMyList } from '@/lib/useMyList';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useCallback, useMemo } from 'react';
-import { Alert, Image, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import { Alert, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import { Image } from 'expo-image';
 
 export default function MyListScreen() {
   const { list, remove } = useMyList();
@@ -174,7 +175,9 @@ export default function MyListScreen() {
                           : require('../../assets/images/Todo.png')
                         } 
                         style={styles.poster} 
-                        resizeMode="cover"
+                        contentFit="cover"
+                        placeholder={require('../../assets/images/Todo.png')}
+                        transition={200}
                       />
                       <View style={styles.posterOverlay}>
                         <View style={styles.playBadge}>
